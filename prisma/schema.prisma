@@ -1,0 +1,261 @@
+// ShramSetu — contract-manpower marketplace
+// Datasource: SQLite by default (zero-setup, deployable on any Node host with a
+// persistent disk). To use Postgres (Neon/Supabase/RDS) for serverless hosting,
+// change provider to "postgresql" and set DATABASE_URL accordingly.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Users & auth
+// ----------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  role         String // COMPANY | CONTRACTOR | ADMIN
+  name         String
+  email        String   @unique
+  mobile       String?
+  mobileVerified Boolean @default(false)
+  passwordHash String
+  status       String   @default("ACTIVE") // ACTIVE | SUSPENDED
+  createdAt    DateTime @default(now())
+
+  companyProfile    CompanyProfile?
+  contractorProfile ContractorProfile?
+  messages          Message[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+}
+
+// ----------------------------------------------------------------------------
+// Company side
+// ----------------------------------------------------------------------------
+
+model CompanyProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName String
+  entityType  String? // Pvt Ltd | LLP | Partnership | Proprietorship | PSU/Govt
+  industry    String?
+  contactName String
+  contactMobile String
+  contactEmail  String
+  city        String
+  district    String?
+  state       String
+  pincode     String?
+  gstin       String?
+  about       String?
+  verified    Boolean  @default(false)
+  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  moderationNotes String?
+  createdAt   DateTime @default(now())
+
+  jobs        Job[]
+  engagements Engagement[]
+}
+
+// ----------------------------------------------------------------------------
+// Contractor side
+// ----------------------------------------------------------------------------
+
+model ContractorProfile {
+  id              String  @id @default(cuid())
+  userId          String  @unique
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firmName        String
+  entityType      String? // Proprietorship | Partnership | Pvt Ltd | LLP
+  ownerName       String
+  yearEstablished Int?
+  address         String?
+  city            String
+  district        String?
+  state           String
+  pincode         String?
+  serviceAreas    String? // comma-separated cities/states served
+  willingOutstation Boolean @default(false)
+
+  // Statutory (self-declared; verified by admin against uploaded docs)
+  pan             String?
+  gstin           String?
+  labourLicenceNo String? // CLRA licence number
+  esicNo          String?
+  epfNo           String?
+
+  // Capacity
+  trades          String  @default("[]") // JSON array of trade keys
+  totalWorkforce  Int     @default(0)
+  available       Int     @default(0)
+  mobilizationDays Int    @default(3)
+
+  about           String?
+  rating          Float   @default(0)
+  ratingCount     Int     @default(0)
+  verified        Boolean @default(false)
+  status          String  @default("PENDING") // PENDING | APPROVED | REJECTED
+  moderationNotes String?
+  createdAt       DateTime @default(now())
+
+  workers     Worker[]
+  documents   Document[]
+  bids        Bid[]
+  engagements Engagement[]
+}
+
+model Worker {
+  id              String   @id @default(cuid())
+  contractorId    String
+  contractor      ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  name            String
+  gender          String? // M | F | O
+  age             Int?
+  trade           String
+  skillLevel      String   @default("SEMI") // SKILLED | SEMI | UNSKILLED
+  yearsExperience Int?
+  nativeState     String?
+  expectedDailyWage Int?
+  availability    String   @default("AVAILABLE") // AVAILABLE | ENGAGED
+  createdAt       DateTime @default(now())
+}
+
+model Document {
+  id           String   @id @default(cuid())
+  contractorId String
+  contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  type         String // PAN | GST | LABOUR_LICENCE | ID | OTHER
+  fileName     String
+  storedName   String // name on disk
+  mimeType     String
+  size         Int
+  status       String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  reviewNotes  String?
+  createdAt    DateTime @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Jobs, bids, engagement
+// ----------------------------------------------------------------------------
+
+model Job {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  city        String
+  district    String?
+  state       String
+  pincode     String?
+  startDate   DateTime?
+  durationDays Int?
+  shift       String? // DAY | NIGHT | ROTATING
+  accommodationProvided Boolean @default(false)
+  foodProvided Boolean @default(false)
+  urgency     String   @default("NORMAL") // URGENT | NORMAL | PLANNED
+  wageOffered Int? // indicative budget per worker/day
+  status      String   @default("OPEN") // OPEN | CLOSED | FILLED
+  createdAt   DateTime @default(now())
+
+  lines       JobLine[]
+  bids        Bid[]
+  engagements Engagement[]
+}
+
+model JobLine {
+  id         String @id @default(cuid())
+  jobId      String
+  job        Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  trade      String
+  headcount  Int
+  skillLevel String @default("SEMI")
+  wageOffered Int?
+}
+
+model Bid {
+  id                  String   @id @default(cuid())
+  jobId               String
+  job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  contractorId        String
+  contractor          ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  ratePerWorkerPerDay Int
+  headcountOffered    Int
+  mobilizationDays    Int
+  notes               String?
+  status              String   @default("SUBMITTED") // SUBMITTED | SHORTLISTED | ACCEPTED | REJECTED
+  createdAt           DateTime @default(now())
+
+  engagement Engagement?
+
+  @@unique([jobId, contractorId])
+}
+
+model Engagement {
+  id                String   @id @default(cuid())
+  jobId             String
+  job               Job      @relation(fields: [jobId], references: [id])
+  companyId         String
+  company           CompanyProfile @relation(fields: [companyId], references: [id])
+  contractorId      String
+  contractor        ContractorProfile @relation(fields: [contractorId], references: [id])
+  bidId             String   @unique
+  bid               Bid      @relation(fields: [bidId], references: [id])
+  status            String   @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  platformFeePercent Float
+  // computed snapshot for display (rate * headcount * duration)
+  estimatedValue    Int      @default(0)
+  estimatedFee      Int      @default(0)
+  companyRating     Int?
+  contractorRating  Int?
+  createdAt         DateTime @default(now())
+
+  messages Message[]
+}
+
+model Message {
+  id           String   @id @default(cuid())
+  engagementId String
+  engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  senderId     String
+  sender       User     @relation(fields: [senderId], references: [id])
+  body         String
+  createdAt    DateTime @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Platform supporting
+// ----------------------------------------------------------------------------
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  body      String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  actor     User     @relation(fields: [actorId], references: [id])
+  action    String
+  detail    String?
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  id                 Int    @id @default(1)
+  platformName       String @default("ShramSetu")
+  platformFeePercent Float  @default(3)
+  paymentsEnabled    Boolean @default(false)
+}

@@ -1,0 +1,15 @@
+/node_modules
+/.next
+/out
+/build
+*.log
+.DS_Store
+
+# env
+.env
+.env*.local
+
+# prisma sqlite db + uploads (runtime data)
+/prisma/*.db
+/prisma/*.db-journal
+/data
