@@ -62,6 +62,22 @@ node scripts/smoke.mjs   # 24 runtime checks (server must be running)
 
 ## Deploy
 
+### Quickest public link tonight — Cloudflare Tunnel (₹0, no account)
+Exposes this machine's app at a public `https://*.trycloudflare.com` URL. Live only while both
+processes (and the PC) stay running. Great for a pilot; use a real host below for 24/7.
+
+```bash
+# 1) build + start the app (terminal 1)
+npm run build && npm run start
+
+# 2) expose it (terminal 2) — prints your public https URL
+#    one-time: download cloudflared.exe from
+#    https://github.com/cloudflare/cloudflared/releases/latest
+./cloudflared.exe tunnel --url http://localhost:3000
+```
+
+The app already allowlists `*.trycloudflare.com` for server actions, so forms work over the tunnel.
+
 ### Option A — Container host (Render / Railway / Fly.io / VPS) — keeps SQLite
 A `Dockerfile` is included. Mount a **persistent volume** at `/app/data` and `/app/prisma`
 so the SQLite DB and uploaded documents survive deploys. Set env vars: `AUTH_SECRET`,
