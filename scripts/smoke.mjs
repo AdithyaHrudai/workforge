@@ -15,7 +15,7 @@ const env = Object.fromEntries(
     }),
 );
 const secret = new TextEncoder().encode(env.AUTH_SECRET);
-const BASE = "http://localhost:3000";
+const BASE = process.env.SMOKE_BASE || "http://localhost:3000";
 const prisma = new PrismaClient();
 
 async function cookieFor(user) {

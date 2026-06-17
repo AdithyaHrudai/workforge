@@ -13,3 +13,6 @@
 /prisma/*.db
 /prisma/*.db-journal
 /data
+
+# local tooling binary (downloaded, not part of source)
+/cloudflared.exe
