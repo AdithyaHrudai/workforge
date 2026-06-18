@@ -16,3 +16,5 @@
 
 # local tooling binary (downloaded, not part of source)
 /cloudflared.exe
+
+.vercel

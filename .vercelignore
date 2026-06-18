@@ -1,0 +1,10 @@
+.env
+.env*.local
+.env*
+/data
+/prisma/*.db
+/prisma/*.db-journal
+cloudflared.exe
+.git
+node_modules
+.next

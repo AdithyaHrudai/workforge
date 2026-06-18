@@ -3,8 +3,9 @@
 **A marketplace for verified contract manpower** — connecting companies on greenfield / EPC
 project sites with verified labour contractors across Andhra Pradesh and South India.
 
-Built with Next.js 14 (App Router, TypeScript), Prisma, and Tailwind CSS. Runs on SQLite out of
-the box (zero setup) and can switch to Postgres for serverless hosting.
+Built with Next.js 14 (App Router, TypeScript), Prisma, and Tailwind CSS, on PostgreSQL.
+
+**🌐 Live:** https://shramsetu-sigma.vercel.app — deployed on **Vercel** (app) + **Neon** (Postgres).
 
 ---
 
@@ -26,10 +27,13 @@ the box (zero setup) and can switch to Postgres for serverless hosting.
 
 ## Run locally
 
+Needs a PostgreSQL database. Easiest: create a free **Neon** branch (or run Postgres in Docker)
+and put its URLs in `.env`.
+
 ```bash
 npm install
-cp .env.example .env        # then edit AUTH_SECRET (see below)
-npm run db:push             # create the SQLite schema
+cp .env.example .env        # set DATABASE_URL + DIRECT_URL (Postgres) and AUTH_SECRET
+npm run db:push             # create the schema
 npm run db:seed             # load demo data
 npm run dev                 # http://localhost:3000
 ```
@@ -60,38 +64,29 @@ node scripts/smoke.mjs   # 24 runtime checks (server must be running)
 
 ---
 
-## Deploy
+## Deploy (current: Vercel + Neon)
 
-### Quickest public link tonight — Cloudflare Tunnel (₹0, no account)
-Exposes this machine's app at a public `https://*.trycloudflare.com` URL. Live only while both
-processes (and the PC) stay running. Great for a pilot; use a real host below for 24/7.
+The app is live on **Vercel** (https://shramsetu-sigma.vercel.app) with a **Neon** Postgres
+database. Document uploads are stored in the DB (`Document.data`), so no object storage is needed.
 
+**Environment variables** (set in the Vercel project, all environments): `DATABASE_URL` (Neon
+pooled), `DIRECT_URL` (Neon direct), `AUTH_SECRET`, `PLATFORM_NAME`, `PLATFORM_FEE_PERCENT`.
+
+**One-time DB setup** (from a machine with the Neon URLs in `.env`):
 ```bash
-# 1) build + start the app (terminal 1)
-npm run build && npm run start
-
-# 2) expose it (terminal 2) — prints your public https URL
-#    one-time: download cloudflared.exe from
-#    https://github.com/cloudflare/cloudflared/releases/latest
-./cloudflared.exe tunnel --url http://localhost:3000
+npx prisma db push       # create the schema on Neon
+npm run db:seed          # optional: demo data
 ```
 
-The app already allowlists `*.trycloudflare.com` for server actions, so forms work over the tunnel.
+**Redeploy** (the dir is already linked via `.vercel/`):
+```bash
+npx vercel deploy --prod --token <YOUR_TOKEN> --scope <YOUR_SCOPE>
+# or, after `vercel login`:  npx vercel --prod
+```
 
-### Option A — Container host (Render / Railway / Fly.io / VPS) — keeps SQLite
-A `Dockerfile` is included. Mount a **persistent volume** at `/app/data` and `/app/prisma`
-so the SQLite DB and uploaded documents survive deploys. Set env vars: `AUTH_SECRET`,
-`PLATFORM_NAME`, `PLATFORM_FEE_PERCENT`.
-
-### Option B — Vercel + Postgres (serverless)
-Vercel's filesystem is ephemeral, so use a managed Postgres (Neon / Supabase free tier):
-1. In `prisma/schema.prisma`, change `provider = "sqlite"` → `provider = "postgresql"`.
-2. Set `DATABASE_URL` to your Postgres connection string (with `?sslmode=require`).
-3. Note: document uploads need object storage (S3 / Cloudflare R2) on serverless — the local
-   disk upload works on Option A but not on Vercel. (See "Roadmap" below.)
-4. `npx prisma db push` against the Postgres DB, then deploy.
-
-Host the database in an **India (Mumbai)** region for latency + data residency (DPDP Act).
+Tip: host the Neon database in an India-adjacent region (Singapore / Mumbai) for latency and DPDP
+data-residency. A `Dockerfile` is also included if you ever move to a container host (point it at
+the same Postgres `DATABASE_URL`).
 
 ---
 
@@ -110,9 +105,9 @@ Host the database in an **India (Mumbai)** region for latency + data residency (
 
 ## Roadmap (next)
 
-- Object storage (S3 / R2) for document uploads so serverless hosting works.
 - Razorpay onboarding + fee collection; WhatsApp notifications.
 - SMS OTP, saved searches, featured listings, contractor analytics.
+- Move document storage to object storage (S3 / R2) if upload volume grows (currently in-DB).
 - Multi-language (Telugu / Hindi).
 
 ---

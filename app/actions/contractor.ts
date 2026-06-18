@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { contractorProfileSchema, workerSchema } from "@/lib/validation";
 import { fieldErrors, type ActionState } from "@/lib/utils";
-import { saveUpload, deleteUpload } from "@/lib/uploads";
+import { readUploadFile } from "@/lib/uploads";
 import { audit } from "@/lib/notify";
 import { DOCUMENT_TYPES } from "@/lib/constants";
 
@@ -144,15 +144,15 @@ export async function uploadDocument(_prev: ActionState, formData: FormData): Pr
   const file = formData.get("file") as File | null;
   if (!file) return { ok: false, error: "Choose a file to upload." };
 
-  const saved = await saveUpload(file);
+  const saved = await readUploadFile(file);
   if (!saved.ok) return { ok: false, error: saved.error };
 
   await prisma.document.create({
     data: {
       contractorId: profile.id,
       type,
-      fileName: file.name.slice(0, 200),
-      storedName: saved.storedName,
+      fileName: saved.fileName,
+      data: saved.buffer,
       mimeType: saved.mimeType,
       size: saved.size,
     },
@@ -167,7 +167,6 @@ export async function deleteDocument(formData: FormData): Promise<void> {
   const id = String(formData.get("id"));
   const doc = await prisma.document.findUnique({ where: { id }, include: { contractor: true } });
   if (doc && doc.contractor.userId === user.id) {
-    await deleteUpload(doc.storedName);
     await prisma.document.delete({ where: { id } });
     revalidatePath("/contractor/documents");
   }

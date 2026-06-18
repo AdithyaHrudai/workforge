@@ -4,12 +4,15 @@
 // change provider to "postgresql" and set DATABASE_URL accordingly.
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // "native" for local dev; "rhel-openssl-3.0.x" for Vercel's serverless runtime.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // pooled connection (runtime)
+  directUrl = env("DIRECT_URL")   // direct connection (migrations / db push)
 }
 
 // ----------------------------------------------------------------------------
@@ -132,7 +135,7 @@ model Document {
   contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
   type         String // PAN | GST | LABOUR_LICENCE | ID | OTHER
   fileName     String
-  storedName   String // name on disk
+  data         Bytes // file contents stored in the DB (serverless-safe)
   mimeType     String
   size         Int
   status       String   @default("PENDING") // PENDING | APPROVED | REJECTED
