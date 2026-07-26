@@ -8,6 +8,7 @@ import { fieldErrors, type ActionState } from "@/lib/utils";
 import { readUploadFile } from "@/lib/uploads";
 import { audit } from "@/lib/notify";
 import { DOCUMENT_TYPES } from "@/lib/constants";
+import { RATE_LIMITS, rateLimit, retryMessage } from "@/lib/ratelimit";
 
 function str(v: FormDataEntryValue | null): string | undefined {
   const s = (v ?? "").toString().trim();
@@ -136,6 +137,11 @@ export async function uploadDocument(_prev: ActionState, formData: FormData): Pr
   const user = await requireRole("CONTRACTOR");
   const profile = await prisma.contractorProfile.findUnique({ where: { userId: user.id } });
   if (!profile) return { ok: false, error: "Complete your firm profile first." };
+
+  const limit = await rateLimit(`upload:user:${user.id}`, RATE_LIMITS.upload);
+  if (!limit.ok) {
+    return { ok: false, error: `Too many uploads. ${retryMessage(limit.retryAfter)}` };
+  }
 
   const type = String(formData.get("type") || "");
   if (!DOCUMENT_TYPES.some((t) => t.value === type)) {

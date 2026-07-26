@@ -5,6 +5,46 @@ const mobile = z
   .trim()
   .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number");
 
+// ---------------------------------------------------------------------------
+// Statutory identifier formats
+//
+// These were previously accepted as free text with only a length cap, which let
+// obviously invalid licence and tax numbers into records an HR team has to rely
+// on. Format validation is not the same as verification against a government
+// API — it only rejects values that cannot possibly be real.
+// ---------------------------------------------------------------------------
+
+/** ABCDE1234F — 5 letters, 4 digits, 1 letter. */
+export const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
+
+/** 2-digit state code + PAN + entity code + 'Z' + checksum. */
+export const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
+
+/** 4-letter bank code, '0', 6-char branch code. */
+export const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+/** 12-digit Universal Account Number (EPFO). */
+export const UAN_RE = /^\d{12}$/;
+
+/** 17-digit ESIC insurance number. */
+export const ESIC_NUMBER_RE = /^\d{17}$/;
+
+const PINCODE_RE = /^[1-9]\d{5}$/;
+
+/** An optional uppercase code: blank is allowed, but a value must match. */
+function optionalCode(re: RegExp, message: string) {
+  return z.string().trim().toUpperCase().regex(re, message).optional().or(z.literal(""));
+}
+
+const pan = optionalCode(PAN_RE, "PAN must look like ABCDE1234F");
+const gstin = optionalCode(GSTIN_RE, "Enter a valid 15-character GSTIN");
+const pincode = z
+  .string()
+  .trim()
+  .regex(PINCODE_RE, "Enter a valid 6-digit pincode")
+  .optional()
+  .or(z.literal(""));
+
 export const registerSchema = z
   .object({
     role: z.enum(["COMPANY", "CONTRACTOR"]),
@@ -30,13 +70,8 @@ export const companyProfileSchema = z.object({
   city: z.string().trim().min(2).max(80),
   district: z.string().trim().max(80).optional(),
   state: z.string().trim().min(2).max(80),
-  pincode: z
-    .string()
-    .trim()
-    .regex(/^\d{6}$/, "Enter a valid 6-digit pincode")
-    .optional()
-    .or(z.literal("")),
-  gstin: z.string().trim().max(20).optional().or(z.literal("")),
+  pincode,
+  gstin,
   about: z.string().trim().max(2000).optional().or(z.literal("")),
 });
 
@@ -49,16 +84,11 @@ export const contractorProfileSchema = z.object({
   city: z.string().trim().min(2).max(80),
   district: z.string().trim().max(80).optional().or(z.literal("")),
   state: z.string().trim().min(2).max(80),
-  pincode: z
-    .string()
-    .trim()
-    .regex(/^\d{6}$/, "Enter a valid 6-digit pincode")
-    .optional()
-    .or(z.literal("")),
+  pincode,
   serviceAreas: z.string().trim().max(300).optional().or(z.literal("")),
   willingOutstation: z.coerce.boolean().optional(),
-  pan: z.string().trim().max(15).optional().or(z.literal("")),
-  gstin: z.string().trim().max(20).optional().or(z.literal("")),
+  pan,
+  gstin,
   labourLicenceNo: z.string().trim().max(40).optional().or(z.literal("")),
   esicNo: z.string().trim().max(40).optional().or(z.literal("")),
   epfNo: z.string().trim().max(40).optional().or(z.literal("")),
@@ -93,12 +123,7 @@ export const jobSchema = z.object({
   city: z.string().trim().min(2).max(80),
   district: z.string().trim().max(80).optional().or(z.literal("")),
   state: z.string().trim().min(2).max(80),
-  pincode: z
-    .string()
-    .trim()
-    .regex(/^\d{6}$/, "Enter a valid 6-digit pincode")
-    .optional()
-    .or(z.literal("")),
+  pincode,
   startDate: z.string().trim().optional().or(z.literal("")),
   durationDays: z.coerce.number().int().min(1).max(3650).optional().or(z.literal("")),
   shift: z.enum(["DAY", "NIGHT", "ROTATING"]).optional().or(z.literal("")),

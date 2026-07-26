@@ -43,6 +43,22 @@ export default async function AdminSettings() {
             </span>
           </span>
         </label>
+        <label className="flex items-start gap-3 rounded-lg bg-slate-50 p-3 text-sm">
+          <input
+            type="checkbox"
+            name="requireCompanyApproval"
+            defaultChecked={s.requireCompanyApproval}
+            className="mt-0.5 h-4 w-4 rounded border-slate-300"
+          />
+          <span>
+            <span className="font-medium text-slate-800">Require admin approval before a company can post jobs</span>
+            <span className="block text-xs text-slate-500">
+              Turn ON to vet every company before its requirements reach contractors — this stops
+              unverified buyers harvesting bids, but you must work the queue under Companies. Leave
+              OFF to let companies post as soon as they complete a profile.
+            </span>
+          </span>
+        </label>
         <button className="btn-primary">Save settings</button>
       </form>
 

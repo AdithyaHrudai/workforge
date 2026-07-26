@@ -1,11 +1,66 @@
+// Demo seed — DEVELOPMENT ONLY.
+//
+// This script is DESTRUCTIVE: it wipes every table before inserting demo data.
+// It therefore refuses to run unless you explicitly opt in, and it never uses
+// hardcoded passwords. To provision or rotate a real admin on a production
+// database, use `npm run admin:create` instead (non-destructive).
+
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 
 const prisma = new PrismaClient();
 
+/** Generates a strong random password when one isn't supplied via env. */
+function generatePassword(): string {
+  // base64url of 18 bytes → 24 chars, no ambiguous escaping.
+  return randomBytes(18).toString("base64url");
+}
+
+/**
+ * Refuses to wipe anything that doesn't look like a local/throwaway database.
+ * Set ALLOW_DESTRUCTIVE_SEED=1 to override (e.g. for a disposable staging branch).
+ */
+function assertSafeToWipe(): void {
+  const url = process.env.DATABASE_URL ?? "";
+  const override = process.env.ALLOW_DESTRUCTIVE_SEED === "1";
+  const looksLocal = /@(localhost|127\.0\.0\.1|host\.docker\.internal)[:/]/.test(url);
+
+  if (looksLocal || override) return;
+
+  const host = url.replace(/^.*@/, "").replace(/[/?].*$/, "") || "(unset)";
+  console.error(
+    [
+      "",
+      "  ✖ Refusing to seed: this does not look like a local database.",
+      "",
+      `    Target host: ${host}`,
+      "",
+      "    `npm run db:seed` DELETES EVERY ROW in every table before inserting",
+      "    demo data. It is meant for local development only.",
+      "",
+      "    • To provision or rotate an admin on a real database, run:",
+      "        npm run admin:create",
+      "",
+      "    • If this database really is disposable and you want to wipe it:",
+      "        ALLOW_DESTRUCTIVE_SEED=1 npm run db:seed",
+      "",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
 async function main() {
-  const pwd = await bcrypt.hash("Demo@12345", 10);
-  const adminPwd = await bcrypt.hash("Admin@12345", 10);
+  assertSafeToWipe();
+
+  // Passwords come from env when provided, otherwise they are generated and
+  // printed once. Nothing is hardcoded, so nothing can leak via source control.
+  const demoPassword = process.env.SEED_DEMO_PASSWORD || generatePassword();
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD || generatePassword();
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || "admin@shramsetu.in";
+
+  const pwd = await bcrypt.hash(demoPassword, 12);
+  const adminPwd = await bcrypt.hash(adminPassword, 12);
 
   // Reset (idempotent dev seed)
   await prisma.message.deleteMany();
@@ -32,14 +87,14 @@ async function main() {
     data: {
       role: "ADMIN",
       name: "Platform Admin",
-      email: "admin@shramsetu.in",
+      email: adminEmail,
       mobile: "9000000000",
       mobileVerified: true,
       passwordHash: adminPwd,
     },
   });
 
-  // --- Company (your dad's org) ---
+  // --- Company ---
   const company = await prisma.user.create({
     data: {
       role: "COMPANY",
@@ -288,10 +343,14 @@ async function main() {
     ],
   });
 
-  console.log("Seed complete.");
-  console.log("  Admin:      admin@shramsetu.in / Admin@12345");
-  console.log("  Company:    company@demo.in / Demo@12345");
-  console.log("  Contractor: contractor@demo.in / Demo@12345");
+  console.log("\nSeed complete. Demo logins (development only):\n");
+  console.log(`  Admin:       ${adminEmail} / ${adminPassword}`);
+  console.log(`  Company:     company@demo.in / ${demoPassword}`);
+  console.log(`  Contractor:  contractor@demo.in / ${demoPassword}`);
+  console.log(
+    "\nThese passwords are generated per-run and printed only here. Save them now,\n" +
+      "or set SEED_ADMIN_PASSWORD / SEED_DEMO_PASSWORD to choose your own.\n",
+  );
 }
 
 main()

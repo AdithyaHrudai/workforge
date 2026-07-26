@@ -7,9 +7,15 @@ import { messageSchema } from "@/lib/validation";
 import { fieldErrors, type ActionState } from "@/lib/utils";
 import { getEngagementWithParties, isParticipant } from "@/lib/engagements";
 import { notify } from "@/lib/notify";
+import { RATE_LIMITS, rateLimit, retryMessage } from "@/lib/ratelimit";
 
 export async function sendMessage(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const user = await requireUser();
+
+  const limit = await rateLimit(`message:user:${user.id}`, RATE_LIMITS.message);
+  if (!limit.ok) {
+    return { ok: false, error: `You're sending messages too quickly. ${retryMessage(limit.retryAfter)}` };
+  }
 
   const parsed = messageSchema.safeParse({
     engagementId: formData.get("engagementId"),

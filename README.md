@@ -47,18 +47,34 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ### Demo logins (from the seed)
 
-| Role | Email | Password |
-|------|-------|----------|
-| Admin | `admin@shramsetu.in` | `Admin@12345` |
-| Company | `company@demo.in` | `Demo@12345` |
-| Contractor | `contractor@demo.in` | `Demo@12345` |
+`npm run db:seed` generates a **random password per run** and prints it once — no
+credentials are hardcoded in this repo. Save what it prints, or choose your own:
+
+```bash
+SEED_ADMIN_PASSWORD='…' SEED_DEMO_PASSWORD='…' npm run db:seed
+```
+
+The seed is **destructive** (it truncates every table) and refuses to run against
+anything that isn't `localhost` unless you pass `ALLOW_DESTRUCTIVE_SEED=1`.
+
+### Creating or rotating the admin on a real database
+
+Never seed production. Use the non-destructive provisioning script, which touches
+exactly one row and **revokes all existing sessions** for that account:
+
+```bash
+npm run admin:create                        # prompts, generates a strong password
+ADMIN_EMAIL=you@company.in npm run admin:create
+```
 
 ### Useful scripts
 
 ```bash
 npm run build      # prisma generate + next build (the "no errors" gate)
 npm run start      # production server
-npm run db:reset   # wipe + reseed
+npm run db:migrate # create + apply a migration in development
+npm run db:deploy  # apply pending migrations (production / CI)
+npm run db:reset   # drop, re-migrate, reseed (local only)
 node scripts/smoke.mjs   # 24 runtime checks (server must be running)
 ```
 
@@ -74,9 +90,12 @@ pooled), `DIRECT_URL` (Neon direct), `AUTH_SECRET`, `PLATFORM_NAME`, `PLATFORM_F
 
 **One-time DB setup** (from a machine with the Neon URLs in `.env`):
 ```bash
-npx prisma db push       # create the schema on Neon
-npm run db:seed          # optional: demo data
+npm run db:deploy        # apply migrations to Neon
+npm run admin:create     # provision the admin account
 ```
+
+> ⚠️ Do **not** run `npm run db:seed` against a deployed database — it truncates
+> every table. It is guarded to refuse non-local databases for that reason.
 
 **Redeploy** (the dir is already linked via `.vercel/`):
 ```bash

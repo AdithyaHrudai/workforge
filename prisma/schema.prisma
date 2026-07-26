@@ -1,7 +1,12 @@
 // ShramSetu — contract-manpower marketplace
-// Datasource: SQLite by default (zero-setup, deployable on any Node host with a
-// persistent disk). To use Postgres (Neon/Supabase/RDS) for serverless hosting,
-// change provider to "postgresql" and set DATABASE_URL accordingly.
+//
+// Datasource: PostgreSQL (Neon in production), accessed through a pooled
+// connection at runtime and a direct connection for migrations.
+//
+// Indexing note: Postgres does *not* create indexes for foreign keys
+// automatically, and Prisma only indexes @id/@unique. Every column used in a
+// WHERE, ORDER BY or JOIN below is therefore indexed explicitly — without these,
+// every listing query degrades to a sequential scan as the tables grow.
 
 generator client {
   provider      = "prisma-client-js"
@@ -12,7 +17,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled connection (runtime)
-  directUrl = env("DIRECT_URL")   // direct connection (migrations / db push)
+  directUrl = env("DIRECT_URL") // direct connection (migrations / db push)
 }
 
 // ----------------------------------------------------------------------------
@@ -20,21 +25,27 @@ datasource db {
 // ----------------------------------------------------------------------------
 
 model User {
-  id           String   @id @default(cuid())
-  role         String // COMPANY | CONTRACTOR | ADMIN
-  name         String
-  email        String   @unique
-  mobile       String?
-  mobileVerified Boolean @default(false)
-  passwordHash String
-  status       String   @default("ACTIVE") // ACTIVE | SUSPENDED
-  createdAt    DateTime @default(now())
+  id             String   @id @default(cuid())
+  role           String // COMPANY | CONTRACTOR | ADMIN
+  name           String
+  email          String   @unique
+  mobile         String?
+  mobileVerified Boolean  @default(false)
+  passwordHash   String
+  status         String   @default("ACTIVE") // ACTIVE | SUSPENDED
+  // Bumped whenever credentials change or sessions must be revoked. Sessions
+  // carry this value; a mismatch invalidates the token immediately, which is
+  // what makes a password rotation actually log an attacker out.
+  tokenVersion   Int      @default(0)
+  createdAt      DateTime @default(now())
 
   companyProfile    CompanyProfile?
   contractorProfile ContractorProfile?
   messages          Message[]
   notifications     Notification[]
   auditLogs         AuditLog[]
+
+  @@index([role, status])
 }
 
 // ----------------------------------------------------------------------------
@@ -42,28 +53,32 @@ model User {
 // ----------------------------------------------------------------------------
 
 model CompanyProfile {
-  id          String   @id @default(cuid())
-  userId      String   @unique
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  companyName String
-  entityType  String? // Pvt Ltd | LLP | Partnership | Proprietorship | PSU/Govt
-  industry    String?
-  contactName String
-  contactMobile String
-  contactEmail  String
-  city        String
-  district    String?
-  state       String
-  pincode     String?
-  gstin       String?
-  about       String?
-  verified    Boolean  @default(false)
-  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName     String
+  entityType      String? // Pvt Ltd | LLP | Partnership | Proprietorship | PSU/Govt
+  industry        String?
+  contactName     String
+  contactMobile   String
+  contactEmail    String
+  city            String
+  district        String?
+  state           String
+  pincode         String?
+  gstin           String?
+  about           String?
+  verified        Boolean  @default(false)
+  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED
   moderationNotes String?
-  createdAt   DateTime @default(now())
+  createdAt       DateTime @default(now())
 
   jobs        Job[]
   engagements Engagement[]
+
+  @@index([status, createdAt])
+  @@index([state, city])
+  @@index([verified])
 }
 
 // ----------------------------------------------------------------------------
@@ -71,19 +86,19 @@ model CompanyProfile {
 // ----------------------------------------------------------------------------
 
 model ContractorProfile {
-  id              String  @id @default(cuid())
-  userId          String  @unique
-  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  firmName        String
-  entityType      String? // Proprietorship | Partnership | Pvt Ltd | LLP
-  ownerName       String
-  yearEstablished Int?
-  address         String?
-  city            String
-  district        String?
-  state           String
-  pincode         String?
-  serviceAreas    String? // comma-separated cities/states served
+  id                String  @id @default(cuid())
+  userId            String  @unique
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firmName          String
+  entityType        String? // Proprietorship | Partnership | Pvt Ltd | LLP
+  ownerName         String
+  yearEstablished   Int?
+  address           String?
+  city              String
+  district          String?
+  state             String
+  pincode           String?
+  serviceAreas      String? // comma-separated cities/states served
   willingOutstation Boolean @default(false)
 
   // Statutory (self-declared; verified by admin against uploaded docs)
@@ -94,16 +109,16 @@ model ContractorProfile {
   epfNo           String?
 
   // Capacity
-  trades          String  @default("[]") // JSON array of trade keys
-  totalWorkforce  Int     @default(0)
-  available       Int     @default(0)
+  trades           String @default("[]") // JSON array of trade keys
+  totalWorkforce   Int    @default(0)
+  available        Int    @default(0)
   mobilizationDays Int    @default(3)
 
   about           String?
-  rating          Float   @default(0)
-  ratingCount     Int     @default(0)
-  verified        Boolean @default(false)
-  status          String  @default("PENDING") // PENDING | APPROVED | REJECTED
+  rating          Float    @default(0)
+  ratingCount     Int      @default(0)
+  verified        Boolean  @default(false)
+  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED
   moderationNotes String?
   createdAt       DateTime @default(now())
 
@@ -111,26 +126,35 @@ model ContractorProfile {
   documents   Document[]
   bids        Bid[]
   engagements Engagement[]
+
+  // Admin moderation queue, ordered by age.
+  @@index([status, createdAt])
+  // "Find contractors": approved firms in a state, best-rated first.
+  @@index([status, state, verified, rating])
+  @@index([status, verified, rating])
 }
 
 model Worker {
-  id              String   @id @default(cuid())
-  contractorId    String
-  contractor      ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
-  name            String
-  gender          String? // M | F | O
-  age             Int?
-  trade           String
-  skillLevel      String   @default("SEMI") // SKILLED | SEMI | UNSKILLED
-  yearsExperience Int?
-  nativeState     String?
+  id                String            @id @default(cuid())
+  contractorId      String
+  contractor        ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  name              String
+  gender            String? // M | F | O
+  age               Int?
+  trade             String
+  skillLevel        String            @default("SEMI") // SKILLED | SEMI | UNSKILLED
+  yearsExperience   Int?
+  nativeState       String?
   expectedDailyWage Int?
-  availability    String   @default("AVAILABLE") // AVAILABLE | ENGAGED
-  createdAt       DateTime @default(now())
+  availability      String            @default("AVAILABLE") // AVAILABLE | ENGAGED
+  createdAt         DateTime          @default(now())
+
+  @@index([contractorId, createdAt])
+  @@index([contractorId, trade, availability])
 }
 
 model Document {
-  id           String   @id @default(cuid())
+  id           String            @id @default(cuid())
   contractorId String
   contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
   type         String // PAN | GST | LABOUR_LICENCE | ID | OTHER
@@ -138,9 +162,12 @@ model Document {
   data         Bytes // file contents stored in the DB (serverless-safe)
   mimeType     String
   size         Int
-  status       String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  status       String            @default("PENDING") // PENDING | APPROVED | REJECTED
   reviewNotes  String?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime          @default(now())
+
+  @@index([contractorId, createdAt])
+  @@index([status, createdAt])
 }
 
 // ----------------------------------------------------------------------------
@@ -148,88 +175,122 @@ model Document {
 // ----------------------------------------------------------------------------
 
 model Job {
-  id          String   @id @default(cuid())
-  companyId   String
-  company     CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  title       String
-  description String?
-  city        String
-  district    String?
-  state       String
-  pincode     String?
-  startDate   DateTime?
-  durationDays Int?
-  shift       String? // DAY | NIGHT | ROTATING
-  accommodationProvided Boolean @default(false)
-  foodProvided Boolean @default(false)
-  urgency     String   @default("NORMAL") // URGENT | NORMAL | PLANNED
-  wageOffered Int? // indicative budget per worker/day
-  status      String   @default("OPEN") // OPEN | CLOSED | FILLED
-  createdAt   DateTime @default(now())
+  id                    String         @id @default(cuid())
+  companyId             String
+  company               CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title                 String
+  description           String?
+  city                  String
+  district              String?
+  state                 String
+  pincode               String?
+  startDate             DateTime?
+  durationDays          Int?
+  shift                 String? // DAY | NIGHT | ROTATING
+  accommodationProvided Boolean        @default(false)
+  foodProvided          Boolean        @default(false)
+  urgency               String         @default("NORMAL") // URGENT | NORMAL | PLANNED
+  wageOffered           Int? // indicative budget per worker/day
+  status                String         @default("OPEN") // OPEN | CLOSED | FILLED | EXPIRED
+  /// Jobs stop surfacing in matching after this. Without it, "urgent" postings
+  /// linger indefinitely and pollute every contractor's feed.
+  expiresAt             DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   lines       JobLine[]
   bids        Bid[]
   engagements Engagement[]
+
+  // The contractor-facing feed: open, unexpired, newest first.
+  @@index([status, expiresAt, createdAt])
+  // A company's own job list.
+  @@index([companyId, createdAt])
+  // Location-narrowed search.
+  @@index([status, state, city])
 }
 
 model JobLine {
-  id         String @id @default(cuid())
-  jobId      String
-  job        Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  trade      String
-  headcount  Int
-  skillLevel String @default("SEMI")
+  id          String @id @default(cuid())
+  jobId       String
+  job         Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  trade       String
+  headcount   Int
+  skillLevel  String @default("SEMI")
   wageOffered Int?
+
+  @@index([jobId])
+  // Lets matching narrow to jobs requiring a contractor's trades in SQL.
+  @@index([trade, skillLevel])
 }
 
 model Bid {
-  id                  String   @id @default(cuid())
+  id                  String            @id @default(cuid())
   jobId               String
-  job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  job                 Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
   contractorId        String
   contractor          ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
   ratePerWorkerPerDay Int
   headcountOffered    Int
   mobilizationDays    Int
   notes               String?
-  status              String   @default("SUBMITTED") // SUBMITTED | SHORTLISTED | ACCEPTED | REJECTED
-  createdAt           DateTime @default(now())
+  status              String            @default("SUBMITTED") // SUBMITTED | SHORTLISTED | ACCEPTED | REJECTED
+  createdAt           DateTime          @default(now())
 
   engagement Engagement?
 
   @@unique([jobId, contractorId])
+  // Company reviewing bids on one job; also backs the awarded-headcount sum.
+  @@index([jobId, status])
+  // "My bids" for a contractor.
+  @@index([contractorId, createdAt])
 }
 
+/// An engagement is the commercial record of an awarded bid. These are retained
+/// deliberately: every relation is Restrict, so a job, party or bid that has an
+/// engagement cannot be deleted out from under it. Erasure requests are served by
+/// anonymising the User, not by deleting the trade history.
 model Engagement {
-  id                String   @id @default(cuid())
-  jobId             String
-  job               Job      @relation(fields: [jobId], references: [id])
-  companyId         String
-  company           CompanyProfile @relation(fields: [companyId], references: [id])
-  contractorId      String
-  contractor        ContractorProfile @relation(fields: [contractorId], references: [id])
-  bidId             String   @unique
-  bid               Bid      @relation(fields: [bidId], references: [id])
-  status            String   @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  id                 String            @id @default(cuid())
+  jobId              String
+  job                Job               @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  companyId          String
+  company            CompanyProfile    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contractorId       String
+  contractor         ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Restrict)
+  bidId              String            @unique
+  bid                Bid               @relation(fields: [bidId], references: [id], onDelete: Restrict)
+  status             String            @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
   platformFeePercent Float
   // computed snapshot for display (rate * headcount * duration)
-  estimatedValue    Int      @default(0)
-  estimatedFee      Int      @default(0)
-  companyRating     Int?
-  contractorRating  Int?
-  createdAt         DateTime @default(now())
+  estimatedValue     Int               @default(0)
+  estimatedFee       Int               @default(0)
+  companyRating      Int?
+  contractorRating   Int?
+  createdAt          DateTime          @default(now())
 
   messages Message[]
+
+  @@index([companyId, createdAt])
+  @@index([contractorId, createdAt])
+  @@index([jobId])
+  @@index([status])
+  // Backs the average-rating recomputation.
+  @@index([contractorId, contractorRating])
 }
 
 model Message {
-  id           String   @id @default(cuid())
+  id           String     @id @default(cuid())
   engagementId String
   engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
   senderId     String
-  sender       User     @relation(fields: [senderId], references: [id])
+  sender       User       @relation(fields: [senderId], references: [id])
   body         String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime   @default(now())
+
+  // Thread reads and incremental polling are both (engagement, time) ordered.
+  @@index([engagementId, createdAt])
+  @@index([senderId])
 }
 
 // ----------------------------------------------------------------------------
@@ -245,6 +306,10 @@ model Notification {
   link      String?
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  // The navbar unread badge runs on every page render.
+  @@index([userId, read])
+  @@index([userId, createdAt])
 }
 
 model AuditLog {
@@ -254,11 +319,30 @@ model AuditLog {
   action    String
   detail    String?
   createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+/// Fixed-window rate-limit counters. Backed by Postgres rather than memory
+/// because serverless instances are ephemeral and don't share state.
+model RateLimit {
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@index([windowStart])
 }
 
 model Setting {
-  id                 Int    @id @default(1)
-  platformName       String @default("ShramSetu")
-  platformFeePercent Float  @default(3)
-  paymentsEnabled    Boolean @default(false)
+  id                     Int     @id @default(1)
+  platformName           String  @default("ShramSetu")
+  platformFeePercent     Float   @default(3)
+  paymentsEnabled        Boolean @default(false)
+  /// When on, a company must be admin-approved before it can post jobs. Off by
+  /// default so the marketplace isn't gated on manual review from day one; turn
+  /// it on once there's an ops team to work the queue.
+  requireCompanyApproval Boolean @default(false)
 }

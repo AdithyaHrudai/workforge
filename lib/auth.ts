@@ -9,7 +9,8 @@ export const SESSION_COOKIE = "ss_session";
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 export type Role = "COMPANY" | "CONTRACTOR" | "ADMIN";
-export type SessionPayload = { uid: string; role: Role; name: string };
+/** `tv` mirrors User.tokenVersion so revoked sessions can be detected. */
+export type SessionPayload = { uid: string; role: Role; name: string; tv: number };
 
 function secretKey(): Uint8Array {
   const secret = process.env.AUTH_SECRET;
@@ -63,6 +64,7 @@ export async function getSession(): Promise<SessionPayload | null> {
       uid: String(payload.uid),
       role: payload.role as Role,
       name: String(payload.name ?? ""),
+      tv: Number(payload.tv ?? 0),
     };
   } catch {
     return null;
@@ -78,6 +80,8 @@ export async function getCurrentUser() {
     include: { companyProfile: true, contractorProfile: true },
   });
   if (!user || user.status === "SUSPENDED") return null;
+  // Reject sessions issued before the last credential change / forced logout.
+  if (user.tokenVersion !== session.tv) return null;
   return user;
 }
 

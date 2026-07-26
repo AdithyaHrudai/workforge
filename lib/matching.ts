@@ -90,7 +90,12 @@ export async function jobsForContractor(contractorId: string) {
 
   const trades = parseTrades(contractor.trades);
   const jobs = await prisma.job.findMany({
-    where: { status: "OPEN" },
+    where: {
+      status: "OPEN",
+      // Expired postings stay in the database for the company's records but
+      // must not appear in a contractor's feed.
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
     include: {
       lines: true,
       company: { select: { companyName: true, city: true, state: true, verified: true } },

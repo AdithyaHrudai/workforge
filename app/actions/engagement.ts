@@ -12,6 +12,13 @@ async function loadOwned(userId: string, engagementId: string) {
   return eng;
 }
 
+/** Parses a 1–5 star value, rejecting anything else rather than clamping it. */
+function parseRating(raw: FormDataEntryValue | null): number | null {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 5) return null;
+  return n;
+}
+
 export async function completeEngagement(formData: FormData): Promise<void> {
   const user = await requireUser();
   const eng = await loadOwned(user.id, String(formData.get("id")));
@@ -31,10 +38,35 @@ export async function completeEngagement(formData: FormData): Promise<void> {
 export async function cancelEngagement(formData: FormData): Promise<void> {
   const user = await requireUser();
   const eng = await loadOwned(user.id, String(formData.get("id")));
-  if (!eng || eng.status === "COMPLETED") return;
-  await prisma.engagement.update({ where: { id: eng.id }, data: { status: "CANCELLED" } });
+  // Only an in-flight engagement can be cancelled. Completed work stays
+  // completed, and cancelling twice is a no-op.
+  if (!eng || eng.status !== "ACTIVE") return;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.engagement.update({ where: { id: eng.id }, data: { status: "CANCELLED" } });
+
+    // The awarded headcount is no longer committed, so a job that was closed
+    // purely because this bid filled it should accept bids again. Left CLOSED if
+    // the company closed it deliberately.
+    const job = await tx.job.findUnique({
+      where: { id: eng.jobId },
+      select: { status: true },
+    });
+    if (job?.status === "FILLED") {
+      await tx.job.update({ where: { id: eng.jobId }, data: { status: "OPEN" } });
+    }
+  });
+
   await audit(user.id, "ENGAGEMENT_CANCEL", eng.id);
+  const other = eng.company.user.id === user.id ? eng.contractor.user.id : eng.company.user.id;
+  await notify({
+    userId: other,
+    type: "ENGAGEMENT_CANCELLED",
+    body: `The engagement for "${eng.job.title}" was cancelled.`,
+    link: `/engagements/${eng.id}`,
+  });
   revalidatePath(`/engagements/${eng.id}`);
+  revalidatePath(`/company/jobs/${eng.jobId}`);
 }
 
 /** Company rates the contractor (1-5). Recomputes the contractor's average. */
@@ -42,19 +74,37 @@ export async function rateContractor(formData: FormData): Promise<void> {
   const user = await requireUser();
   const eng = await loadOwned(user.id, String(formData.get("id")));
   if (!eng || eng.company.user.id !== user.id) return;
-  const rating = Math.max(1, Math.min(5, Number(formData.get("rating")) || 0));
-  await prisma.engagement.update({ where: { id: eng.id }, data: { contractorRating: rating } });
+  // Ratings feed the contractor's public average, so they're only accepted on
+  // completed work and only once. The UI hides the form, but this action is
+  // directly invocable — the check has to live here.
+  if (eng.status !== "COMPLETED" || eng.contractorRating !== null) return;
 
-  const rated = await prisma.engagement.findMany({
-    where: { contractorId: eng.contractorId, contractorRating: { not: null } },
-    select: { contractorRating: true },
+  const rating = parseRating(formData.get("rating"));
+  if (rating === null) return;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.engagement.update({
+      where: { id: eng.id },
+      data: { contractorRating: rating },
+    });
+
+    // Recompute in the database rather than pulling every rating into memory.
+    const agg = await tx.engagement.aggregate({
+      where: { contractorId: eng.contractorId, contractorRating: { not: null } },
+      _avg: { contractorRating: true },
+      _count: { contractorRating: true },
+    });
+
+    await tx.contractorProfile.update({
+      where: { id: eng.contractorId },
+      data: {
+        rating: Math.round((agg._avg.contractorRating ?? 0) * 10) / 10,
+        ratingCount: agg._count.contractorRating,
+      },
+    });
   });
-  const vals = rated.map((r) => r.contractorRating ?? 0).filter((n) => n > 0);
-  const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-  await prisma.contractorProfile.update({
-    where: { id: eng.contractorId },
-    data: { rating: Math.round(avg * 10) / 10, ratingCount: vals.length },
-  });
+
+  await audit(user.id, "RATE_CONTRACTOR", `${eng.id}=${rating}`);
   revalidatePath(`/engagements/${eng.id}`);
 }
 
@@ -63,7 +113,15 @@ export async function rateCompany(formData: FormData): Promise<void> {
   const user = await requireUser();
   const eng = await loadOwned(user.id, String(formData.get("id")));
   if (!eng || eng.contractor.user.id !== user.id) return;
-  const rating = Math.max(1, Math.min(5, Number(formData.get("rating")) || 0));
-  await prisma.engagement.update({ where: { id: eng.id }, data: { companyRating: rating } });
+  if (eng.status !== "COMPLETED" || eng.companyRating !== null) return;
+
+  const rating = parseRating(formData.get("rating"));
+  if (rating === null) return;
+
+  await prisma.engagement.update({
+    where: { id: eng.id },
+    data: { companyRating: rating },
+  });
+  await audit(user.id, "RATE_COMPANY", `${eng.id}=${rating}`);
   revalidatePath(`/engagements/${eng.id}`);
 }

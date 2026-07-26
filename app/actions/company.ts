@@ -7,6 +7,8 @@ import { requireRole } from "@/lib/auth";
 import { companyProfileSchema, jobSchema } from "@/lib/validation";
 import { fieldErrors, type ActionState } from "@/lib/utils";
 import { audit } from "@/lib/notify";
+import { getSettings } from "@/lib/settings";
+import { jobExpiryFrom } from "@/lib/constants";
 
 function str(v: FormDataEntryValue | null): string | undefined {
   const s = (v ?? "").toString().trim();
@@ -57,8 +59,9 @@ export async function saveCompanyProfile(
   if (existing) {
     await prisma.companyProfile.update({ where: { userId: user.id }, data });
   } else {
-    // Companies are active immediately; admin can issue a "verified" badge later.
-    await prisma.companyProfile.create({ data: { ...data, userId: user.id, status: "APPROVED" } });
+    // Starts PENDING so the field means something. Whether PENDING blocks job
+    // posting is controlled by Setting.requireCompanyApproval — see createJob.
+    await prisma.companyProfile.create({ data: { ...data, userId: user.id, status: "PENDING" } });
   }
 
   await audit(user.id, existing ? "COMPANY_PROFILE_UPDATE" : "COMPANY_PROFILE_CREATE");
@@ -70,6 +73,17 @@ export async function createJob(_prev: ActionState, formData: FormData): Promise
   const user = await requireRole("COMPANY");
   const company = await prisma.companyProfile.findUnique({ where: { userId: user.id } });
   if (!company) return { ok: false, error: "Complete your company profile first." };
+
+  const settings = await getSettings();
+  if (settings.requireCompanyApproval && company.status !== "APPROVED") {
+    return {
+      ok: false,
+      error:
+        company.status === "REJECTED"
+          ? "Your company registration was not approved. Contact support."
+          : "Your company is awaiting verification. You can post jobs once it's approved.",
+    };
+  }
 
   let lines: unknown = [];
   try {
@@ -99,6 +113,8 @@ export async function createJob(_prev: ActionState, formData: FormData): Promise
   }
   const d = parsed.data;
 
+  const startDate = d.startDate ? new Date(d.startDate) : null;
+
   const job = await prisma.job.create({
     data: {
       companyId: company.id,
@@ -108,7 +124,8 @@ export async function createJob(_prev: ActionState, formData: FormData): Promise
       district: d.district || null,
       state: d.state,
       pincode: d.pincode || null,
-      startDate: d.startDate ? new Date(d.startDate) : null,
+      startDate,
+      expiresAt: jobExpiryFrom(d.urgency, startDate),
       durationDays: d.durationDays ? Number(d.durationDays) : null,
       shift: d.shift || null,
       accommodationProvided: Boolean(d.accommodationProvided),

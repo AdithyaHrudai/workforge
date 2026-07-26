@@ -44,6 +44,25 @@ export const URGENCY: Option[] = [
   { value: "PLANNED", label: "Planned (future)" },
 ];
 
+/**
+ * How long a posting stays live, by urgency. An "urgent" requirement that is
+ * still in contractors' feeds two months later destroys trust in the feed, so
+ * every job gets an expiry derived from how urgent the company said it was.
+ */
+export const JOB_LIFETIME_DAYS: Record<string, number> = {
+  URGENT: 14,
+  NORMAL: 45,
+  PLANNED: 120,
+};
+
+export function jobExpiryFrom(urgency: string, startDate?: Date | null): Date {
+  const days = JOB_LIFETIME_DAYS[urgency] ?? JOB_LIFETIME_DAYS.NORMAL;
+  const fromNow = Date.now() + days * 86400_000;
+  // A posting shouldn't expire before the work is due to start.
+  const floor = startDate ? startDate.getTime() + 7 * 86400_000 : 0;
+  return new Date(Math.max(fromNow, floor));
+}
+
 export const ENTITY_TYPES: Option[] = [
   { value: "Proprietorship", label: "Proprietorship" },
   { value: "Partnership", label: "Partnership" },

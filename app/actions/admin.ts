@@ -80,6 +80,33 @@ export async function setCompanyVerified(formData: FormData): Promise<void> {
   revalidatePath("/admin/companies");
 }
 
+/** Moderates a company. Gates job posting when requireCompanyApproval is on. */
+export async function setCompanyStatus(formData: FormData): Promise<void> {
+  const admin = await requireRole("ADMIN");
+  const id = String(formData.get("id"));
+  const status = String(formData.get("status"));
+  const notes = String(formData.get("notes") || "").trim() || null;
+  if (!["APPROVED", "REJECTED", "PENDING"].includes(status)) return;
+
+  const profile = await prisma.companyProfile.update({
+    where: { id },
+    data: { status, moderationNotes: notes },
+  });
+  await audit(admin.id, "COMPANY_STATUS", `${id}=${status}`);
+  await notify({
+    userId: profile.userId,
+    type: "MODERATION",
+    body:
+      status === "APPROVED"
+        ? "Your company has been approved — you can now post job requirements."
+        : status === "REJECTED"
+          ? `Your company registration needs changes${notes ? `: ${notes}` : "."}`
+          : "Your company is under review.",
+    link: "/company",
+  });
+  revalidatePath("/admin/companies");
+}
+
 export async function setUserSuspended(formData: FormData): Promise<void> {
   const admin = await requireRole("ADMIN");
   const id = String(formData.get("id"));
@@ -96,11 +123,17 @@ export async function updateSettings(formData: FormData): Promise<void> {
   const platformName = String(formData.get("platformName") || "ShramSetu").trim() || "ShramSetu";
   const fee = Math.max(0, Math.min(30, Number(formData.get("platformFeePercent")) || 0));
   const paymentsEnabled = String(formData.get("paymentsEnabled")) === "on";
+  const requireCompanyApproval = String(formData.get("requireCompanyApproval")) === "on";
+  const data = { platformName, platformFeePercent: fee, paymentsEnabled, requireCompanyApproval };
   await prisma.setting.upsert({
     where: { id: 1 },
-    update: { platformName, platformFeePercent: fee, paymentsEnabled },
-    create: { id: 1, platformName, platformFeePercent: fee, paymentsEnabled },
+    update: data,
+    create: { id: 1, ...data },
   });
-  await audit(admin.id, "SETTINGS_UPDATE", `fee=${fee};payments=${paymentsEnabled}`);
+  await audit(
+    admin.id,
+    "SETTINGS_UPDATE",
+    `fee=${fee};payments=${paymentsEnabled};companyApproval=${requireCompanyApproval}`,
+  );
   revalidatePath("/admin/settings");
 }
