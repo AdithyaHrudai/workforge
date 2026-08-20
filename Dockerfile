@@ -1,4 +1,4 @@
-# ShramSetu — production container image.
+# WorkForge — production container image.
 # Reliable on container hosts (Render, Railway, Fly.io, a VPS) with a persistent
 # volume mounted at /app/data and /app/prisma for the SQLite DB + uploads.
 FROM node:20-slim

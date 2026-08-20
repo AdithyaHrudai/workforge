@@ -1,43 +1,65 @@
-"use client";
-
-import { useFormState } from "react-dom";
+import type { Metadata } from "next";
 import Link from "next/link";
-import { loginAction } from "@/app/actions/auth";
-import { Field } from "@/components/Field";
-import { SubmitButton } from "@/components/SubmitButton";
-import { Alert } from "@/components/Badge";
+import { LoginForm } from "@/components/forms/LoginForm";
+import { Notice } from "@/components/Badge";
+import { googleEnabled } from "@/lib/google-oauth";
 
-export default function LoginPage() {
-  const [state, action] = useFormState(loginAction, null);
-  const errs = (state && !state.ok && state.fieldErrors) || {};
+export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = { title: "Log in" };
+
+/** Errors handed back by the Google callback, which cannot render a form state. */
+const OAUTH_ERRORS: Record<string, string> = {
+  google_unavailable: "Google sign-in isn't configured yet. Use your email and password.",
+  cancelled: "Google sign-in was cancelled.",
+  invalid_state: "That sign-in link expired. Please try again.",
+  no_code: "Google didn't complete the sign-in. Please try again.",
+  google_failed: "We couldn't reach Google. Please try again.",
+  email_unverified: "Your Google email isn't verified, so we can't create an account with it.",
+  suspended: "This account has been suspended. Contact support.",
+  not_allowed: "This account can't sign in here.",
+  rate_limited: "Too many attempts. Please wait a few minutes.",
+};
+
+export default function LoginPage({
+  searchParams,
+}: {
+  searchParams: { role?: string; error?: string; next?: string; reset?: string };
+}) {
+  const role = searchParams.role === "CONTRACTOR" ? "CONTRACTOR" : "COMPANY";
+  const oauthError = searchParams.error ? OAUTH_ERRORS[searchParams.error] : undefined;
+  // Only a same-site path is ever carried forward — see safeNext in the action.
+  const next =
+    searchParams.next?.startsWith("/") && !searchParams.next.startsWith("//")
+      ? searchParams.next
+      : undefined;
 
   return (
     <div className="mx-auto max-w-md">
       <h1 className="mb-1 text-2xl font-bold text-slate-900">Welcome back</h1>
-      <p className="mb-6 text-sm text-slate-500">Log in to your ShramSetu account.</p>
+      <p className="mb-6 text-sm text-slate-500">Log in to your WorkForge account.</p>
 
-      <form action={action} className="card space-y-4">
-        <Alert state={state} />
-        <Field label="Email" name="email" type="email" required error={errs.email} placeholder="you@example.com" />
-        <Field label="Password" name="password" type="password" required error={errs.password} />
-        <SubmitButton className="btn-primary w-full" pendingText="Logging in…">
-          Log in
-        </SubmitButton>
-      </form>
+      {searchParams.reset === "1" && (
+        <div className="mb-4">
+          <Notice tone="success">
+            Your password has been changed. Sign in with your new one.
+          </Notice>
+        </div>
+      )}
+
+      <LoginForm
+        role={role}
+        googleEnabled={googleEnabled()}
+        oauthError={oauthError}
+        next={next}
+      />
 
       <p className="mt-4 text-center text-sm text-slate-500">
-        New to ShramSetu?{" "}
-        <Link href="/register" className="font-medium text-brand-600 hover:underline">
+        New to WorkForge?{" "}
+        <Link href="/register" className="font-medium text-brand-700 hover:underline">
           Create an account
         </Link>
       </p>
-
-      <div className="mt-6 rounded-lg bg-slate-100 p-4 text-xs text-slate-500">
-        <p className="font-semibold text-slate-600">Demo logins</p>
-        <p>Company — company@demo.in / Demo@12345</p>
-        <p>Contractor — contractor@demo.in / Demo@12345</p>
-        <p>Admin — admin@shramsetu.in / Admin@12345</p>
-      </div>
     </div>
   );
 }

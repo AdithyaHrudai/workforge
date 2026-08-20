@@ -7,7 +7,6 @@ export default async function DashboardRouter() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
-  if (user.role === "ADMIN") redirect("/admin");
   if (user.role === "COMPANY") {
     redirect(user.companyProfile ? "/company" : "/company/profile");
   }

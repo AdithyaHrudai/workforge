@@ -11,7 +11,10 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
   const eng = await getEngagementWithParties(params.id);
   if (!eng) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (!isParticipant(eng, user.id) && user.role !== "ADMIN") {
+  // Participants only. Administrators used to be admitted here; they are not,
+  // because verifying a firm's paperwork never requires reading what two
+  // parties said to each other in private.
+  if (!isParticipant(eng, user.id)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

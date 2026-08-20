@@ -8,6 +8,10 @@
 # env
 .env
 .env*.local
+# `npm run db:local` parks the previous config here while it switches to the
+# Docker database. These hold the hosted connection string and AUTH_SECRET —
+# real credentials sitting in the working tree under an innocuous extension.
+.env*.bak
 
 # prisma sqlite db + uploads (runtime data)
 /prisma/*.db
@@ -18,3 +22,6 @@
 /cloudflared.exe
 
 .vercel
+
+# build cache
+tsconfig.tsbuildinfo

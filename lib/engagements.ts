@@ -9,17 +9,29 @@ export async function getEngagementWithParties(id: string) {
   return prisma.engagement.findUnique({
     where: { id },
     include: {
-      job: { include: { lines: true } },
-      bid: true,
-      company: { include: { user: { select: { id: true, name: true, email: true, mobile: true } } } },
-      contractor: { include: { user: { select: { id: true, name: true, email: true, mobile: true } } } },
+      requirement: { include: { roles: true } },
+      proposal: true,
+      review: true,
+      company: {
+        include: { user: { select: { id: true, name: true, email: true, mobile: true } } },
+      },
+      contractor: {
+        include: { user: { select: { id: true, name: true, email: true, mobile: true } } },
+      },
     },
   });
 }
 
-export type EngagementWithParties = NonNullable<Awaited<ReturnType<typeof getEngagementWithParties>>>;
+export type EngagementWithParties = NonNullable<
+  Awaited<ReturnType<typeof getEngagementWithParties>>
+>;
 
 /** True if the given user is the company or contractor on this engagement. */
 export function isParticipant(eng: EngagementWithParties, userId: string): boolean {
   return eng.company.user.id === userId || eng.contractor.user.id === userId;
+}
+
+/** The other party's user id — who to notify when one side acts. */
+export function counterpartyUserId(eng: EngagementWithParties, actorId: string): string {
+  return eng.company.user.id === actorId ? eng.contractor.user.id : eng.company.user.id;
 }

@@ -1,14 +1,23 @@
 import "server-only";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "@/lib/db";
 
-export const SESSION_COOKIE = "ss_session";
+export const SESSION_COOKIE = "wf_session";
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
-export type Role = "COMPANY" | "CONTRACTOR" | "ADMIN";
+/**
+ * Marketplace roles only.
+ *
+ * Administrators are not users and have no role here — they live in AdminUser
+ * and authenticate through lib/admin-auth.ts against a different cookie. That
+ * means no session minted by this module can ever satisfy an admin check, no
+ * matter what a payload claims.
+ */
+export type Role = "COMPANY" | "CONTRACTOR";
 /** `tv` mirrors User.tokenVersion so revoked sessions can be detected. */
 export type SessionPayload = { uid: string; role: Role; name: string; tv: number };
 
@@ -71,8 +80,19 @@ export async function getSession(): Promise<SessionPayload | null> {
   }
 }
 
-/** Full user record for the current session, or null. */
-export async function getCurrentUser() {
+/**
+ * Full user record for the current session, or null.
+ *
+ * Memoised per request with React's `cache()`. Every protected route resolves
+ * the user at least twice — the segment layout calls `requireRole()` and the
+ * page then calls it again — and each of those was a separate query with the
+ * profile relations joined. Against a database ~450ms away that doubled the
+ * cost of loading any signed-in page for no benefit.
+ *
+ * The scope is one render pass, so this is not a stale-session risk: a
+ * suspension or password change is still picked up on the very next request.
+ */
+export const getCurrentUser = cache(async function getCurrentUser() {
   const session = await getSession();
   if (!session) return null;
   const user = await prisma.user.findUnique({
@@ -82,8 +102,13 @@ export async function getCurrentUser() {
   if (!user || user.status === "SUSPENDED") return null;
   // Reject sessions issued before the last credential change / forced logout.
   if (user.tokenVersion !== session.tv) return null;
+  // Belt and braces against legacy rows: administrators were once a role on
+  // this table. Such an account can no longer sign in (the migration suspended
+  // them), but if one were ever reactivated by hand it must still not resolve
+  // to a marketplace user with an unhandled role.
+  if (user.role !== "COMPANY" && user.role !== "CONTRACTOR") return null;
   return user;
-}
+});
 
 export async function requireUser() {
   const user = await getCurrentUser();

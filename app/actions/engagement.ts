@@ -3,8 +3,17 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { getEngagementWithParties, isParticipant } from "@/lib/engagements";
+import { contractorReviewSchema } from "@/lib/validation";
+import { fieldErrors, type ActionState } from "@/lib/utils";
+import { text } from "@/lib/forms";
+import {
+  counterpartyUserId,
+  getEngagementWithParties,
+  isParticipant,
+} from "@/lib/engagements";
 import { notify, audit } from "@/lib/notify";
+import { overallOf, recomputeContractorRatings } from "@/lib/reviews";
+import { isHeadcountCategory } from "@/lib/constants";
 
 async function loadOwned(userId: string, engagementId: string) {
   const eng = await getEngagementWithParties(engagementId);
@@ -12,24 +21,20 @@ async function loadOwned(userId: string, engagementId: string) {
   return eng;
 }
 
-/** Parses a 1–5 star value, rejecting anything else rather than clamping it. */
-function parseRating(raw: FormDataEntryValue | null): number | null {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > 5) return null;
-  return n;
-}
-
 export async function completeEngagement(formData: FormData): Promise<void> {
   const user = await requireUser();
-  const eng = await loadOwned(user.id, String(formData.get("id")));
+  const eng = await loadOwned(user.id, text(formData, "id"));
   if (!eng || eng.status !== "ACTIVE") return;
-  await prisma.engagement.update({ where: { id: eng.id }, data: { status: "COMPLETED" } });
+
+  await prisma.engagement.update({
+    where: { id: eng.id },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
   await audit(user.id, "ENGAGEMENT_COMPLETE", eng.id);
-  const other = eng.company.user.id === user.id ? eng.contractor.user.id : eng.company.user.id;
   await notify({
-    userId: other,
+    userId: counterpartyUserId(eng, user.id),
     type: "ENGAGEMENT_COMPLETED",
-    body: `The engagement for "${eng.job.title}" was marked complete. Leave a rating.`,
+    body: `The engagement for "${eng.requirement.title}" was marked complete. Please leave a rating.`,
     link: `/engagements/${eng.id}`,
   });
   revalidatePath(`/engagements/${eng.id}`);
@@ -37,7 +42,7 @@ export async function completeEngagement(formData: FormData): Promise<void> {
 
 export async function cancelEngagement(formData: FormData): Promise<void> {
   const user = await requireUser();
-  const eng = await loadOwned(user.id, String(formData.get("id")));
+  const eng = await loadOwned(user.id, text(formData, "id"));
   // Only an in-flight engagement can be cancelled. Completed work stays
   // completed, and cancelling twice is a no-op.
   if (!eng || eng.status !== "ACTIVE") return;
@@ -45,83 +50,159 @@ export async function cancelEngagement(formData: FormData): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.engagement.update({ where: { id: eng.id }, data: { status: "CANCELLED" } });
 
-    // The awarded headcount is no longer committed, so a job that was closed
-    // purely because this bid filled it should accept bids again. Left CLOSED if
-    // the company closed it deliberately.
-    const job = await tx.job.findUnique({
-      where: { id: eng.jobId },
+    // The awarded commitment is released, so a requirement that was marked
+    // AWARDED purely because this proposal settled it should take proposals
+    // again. Left alone if the company closed it deliberately.
+    const requirement = await tx.requirement.findUnique({
+      where: { id: eng.requirementId },
       select: { status: true },
     });
-    if (job?.status === "FILLED") {
-      await tx.job.update({ where: { id: eng.jobId }, data: { status: "OPEN" } });
+    if (requirement?.status === "AWARDED") {
+      await tx.requirement.update({
+        where: { id: eng.requirementId },
+        data: { status: "OPEN" },
+      });
     }
+
+    // The proposal is no longer the winning one either.
+    await tx.proposal.update({
+      where: { id: eng.proposalId },
+      data: { status: "WITHDRAWN" },
+    });
   });
 
   await audit(user.id, "ENGAGEMENT_CANCEL", eng.id);
-  const other = eng.company.user.id === user.id ? eng.contractor.user.id : eng.company.user.id;
   await notify({
-    userId: other,
+    userId: counterpartyUserId(eng, user.id),
     type: "ENGAGEMENT_CANCELLED",
-    body: `The engagement for "${eng.job.title}" was cancelled.`,
+    body: `The engagement for "${eng.requirement.title}" was cancelled.`,
     link: `/engagements/${eng.id}`,
   });
   revalidatePath(`/engagements/${eng.id}`);
-  revalidatePath(`/company/jobs/${eng.jobId}`);
+  revalidatePath(`/company/requirements/${eng.requirementId}`);
 }
 
-/** Company rates the contractor (1-5). Recomputes the contractor's average. */
-export async function rateContractor(formData: FormData): Promise<void> {
+/**
+ * The company's multi-parameter review of the contractor.
+ *
+ * A single star rating was never going to be enough here: the client was
+ * explicit that companies judge a contractor on whether manpower arrived on
+ * time, whether statutory compliance was clean, and — the one that matters most
+ * to the workers themselves — whether the contractor actually paid them.
+ */
+export async function reviewContractor(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const user = await requireUser();
-  const eng = await loadOwned(user.id, String(formData.get("id")));
-  if (!eng || eng.company.user.id !== user.id) return;
-  // Ratings feed the contractor's public average, so they're only accepted on
+  const engagementId = text(formData, "engagementId");
+  const eng = await loadOwned(user.id, engagementId);
+
+  if (!eng || eng.company.user.id !== user.id) {
+    return { ok: false, error: "Only the engaging company can review a contractor." };
+  }
+  // Reviews feed the contractor's public averages, so they are accepted only on
   // completed work and only once. The UI hides the form, but this action is
   // directly invocable — the check has to live here.
-  if (eng.status !== "COMPLETED" || eng.contractorRating !== null) return;
+  if (eng.status !== "COMPLETED") {
+    return { ok: false, error: "You can review a contractor once the engagement is complete." };
+  }
+  if (eng.review) {
+    return { ok: false, error: "You have already reviewed this engagement." };
+  }
 
-  const rating = parseRating(formData.get("rating"));
-  if (rating === null) return;
+  const parsed = contractorReviewSchema.safeParse({
+    engagementId,
+    deployment: text(formData, "deployment"),
+    compliance: text(formData, "compliance"),
+    workerPayment: text(formData, "workerPayment"),
+    manpowerQuality: text(formData, "manpowerQuality"),
+    responsiveness: text(formData, "responsiveness"),
+    comment: text(formData, "comment"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "Please rate every parameter from 1 to 5.",
+      fieldErrors: fieldErrors(parsed.error),
+    };
+  }
+  const d = parsed.data;
 
-  await prisma.$transaction(async (tx) => {
-    await tx.engagement.update({
-      where: { id: eng.id },
-      data: { contractorRating: rating },
-    });
-
-    // Recompute in the database rather than pulling every rating into memory.
-    const agg = await tx.engagement.aggregate({
-      where: { contractorId: eng.contractorId, contractorRating: { not: null } },
-      _avg: { contractorRating: true },
-      _count: { contractorRating: true },
-    });
-
-    await tx.contractorProfile.update({
-      where: { id: eng.contractorId },
-      data: {
-        rating: Math.round((agg._avg.contractorRating ?? 0) * 10) / 10,
-        ratingCount: agg._count.contractorRating,
-      },
-    });
+  const overall = overallOf({
+    deployment: d.deployment,
+    compliance: d.compliance,
+    workerPayment: d.workerPayment,
+    manpowerQuality: d.manpowerQuality,
+    responsiveness: d.responsiveness,
   });
 
-  await audit(user.id, "RATE_CONTRACTOR", `${eng.id}=${rating}`);
+  // The review and the aggregate it feeds move together, so a contractor's
+  // headline rating can never be observed out of step with its reviews.
+  await prisma.$transaction(async (tx) => {
+    await tx.contractorReview.create({
+      data: {
+        engagementId: eng.id,
+        contractorId: eng.contractorId,
+        companyId: eng.companyId,
+        deployment: d.deployment,
+        compliance: d.compliance,
+        workerPayment: d.workerPayment,
+        manpowerQuality: d.manpowerQuality,
+        responsiveness: d.responsiveness,
+        overall,
+        comment: d.comment ?? null,
+      },
+    });
+    await recomputeContractorRatings(tx, eng.contractorId);
+  });
+
+  await audit(user.id, "CONTRACTOR_REVIEW", `${eng.id}=${overall}`);
+  await notify({
+    userId: eng.contractor.user.id,
+    type: "REVIEW_RECEIVED",
+    body: `${eng.company.companyName} rated your work on "${eng.requirement.title}" ${overall.toFixed(1)}/5.`,
+    link: "/contractor",
+  });
+
   revalidatePath(`/engagements/${eng.id}`);
+  revalidatePath(`/contractors/${eng.contractorId}`);
+  return { ok: true, message: "Thank you — your rating helps other companies choose well." };
 }
 
-/** Contractor rates the company (1-5). */
+/** The contractor's simpler rating of the company. */
 export async function rateCompany(formData: FormData): Promise<void> {
   const user = await requireUser();
-  const eng = await loadOwned(user.id, String(formData.get("id")));
+  const eng = await loadOwned(user.id, text(formData, "id"));
   if (!eng || eng.contractor.user.id !== user.id) return;
   if (eng.status !== "COMPLETED" || eng.companyRating !== null) return;
 
-  const rating = parseRating(formData.get("rating"));
-  if (rating === null) return;
+  const rating = Number(text(formData, "rating"));
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return;
 
   await prisma.engagement.update({
     where: { id: eng.id },
     data: { companyRating: rating },
   });
   await audit(user.id, "RATE_COMPANY", `${eng.id}=${rating}`);
+  revalidatePath(`/engagements/${eng.id}`);
+}
+
+/**
+ * Updates the deployed headcount on a live staffing engagement — the number
+ * actually on site drifts from the number quoted, and the company's records
+ * should follow reality.
+ */
+export async function updateDeployedHeadcount(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const eng = await loadOwned(user.id, text(formData, "id"));
+  if (!eng || eng.status !== "ACTIVE") return;
+  if (!isHeadcountCategory(eng.requirement.category)) return;
+
+  const headcount = Number(text(formData, "headcount"));
+  if (!Number.isInteger(headcount) || headcount < 0 || headcount > 100000) return;
+
+  await prisma.engagement.update({ where: { id: eng.id }, data: { headcount } });
+  await audit(user.id, "ENGAGEMENT_HEADCOUNT", `${eng.id}=${headcount}`);
   revalidatePath(`/engagements/${eng.id}`);
 }

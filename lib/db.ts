@@ -1,4 +1,9 @@
 import { PrismaClient } from "@prisma/client";
+import { assertEnv } from "@/lib/env";
+
+// Every server path that matters reaches the database, so this is the one
+// import that reliably runs before the app can do anything with a bad config.
+assertEnv();
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;

@@ -1,12 +1,19 @@
-// ShramSetu — contract-manpower marketplace
+// WorkForge — industrial contract-staffing marketplace
 //
 // Datasource: PostgreSQL (Neon in production), accessed through a pooled
 // connection at runtime and a direct connection for migrations.
 //
-// Indexing note: Postgres does *not* create indexes for foreign keys
-// automatically, and Prisma only indexes @id/@unique. Every column used in a
-// WHERE, ORDER BY or JOIN below is therefore indexed explicitly — without these,
-// every listing query degrades to a sequential scan as the tables grow.
+// Two conventions run through this schema:
+//
+//  1. Multi-valued attributes (industries served, states of presence, contract
+//     categories offered) are Postgres text[] rather than JSON strings, because
+//     the contractor search filters on them with `hasSome`. Those columns get
+//     GIN indexes in the migration — Prisma can't express those in the schema.
+//
+//  2. Postgres does not index foreign keys automatically and Prisma only
+//     indexes @id/@unique. Every column used in a WHERE, ORDER BY or JOIN is
+//     therefore indexed explicitly; without these, each listing query degrades
+//     to a sequential scan as the tables grow.
 
 generator client {
   provider      = "prisma-client-js"
@@ -26,12 +33,25 @@ datasource db {
 
 model User {
   id             String   @id @default(cuid())
-  role           String // COMPANY | CONTRACTOR | ADMIN
+  /// COMPANY | CONTRACTOR. Administrators are deliberately *not* users — see
+  /// AdminUser below.
+  role           String
   name           String
   email          String   @unique
+  /// Proven by clicking a link sent to the address, or asserted by Google for
+  /// an account created through it. Nothing is blocked while it is false — an
+  /// unverified buyer can still look around — but it is what the other side of
+  /// a deal is really being shown when contact details are unlocked.
+  emailVerified  Boolean  @default(false)
   mobile         String?
   mobileVerified Boolean  @default(false)
-  passwordHash   String
+  /// Null for an account that only ever signs in with Google. Password login
+  /// checks this is present before comparing, so a Google-only account cannot
+  /// be entered with an empty or guessed password.
+  passwordHash   String?
+  /// Google's stable subject id. Matched before email, because an email can be
+  /// reassigned within a Workspace domain while the subject never changes.
+  googleId       String?  @unique
   status         String   @default("ACTIVE") // ACTIVE | SUSPENDED
   // Bumped whenever credentials change or sessions must be revoked. Sessions
   // carry this value; a mismatch invalidates the token immediately, which is
@@ -44,37 +64,208 @@ model User {
   messages          Message[]
   notifications     Notification[]
   auditLogs         AuditLog[]
+  authTokens        AuthToken[]
 
   @@index([role, status])
 }
 
+/// Single-use, expiring links: password resets and email verification.
+///
+/// Only the SHA-256 of the token is stored. A leaked database backup therefore
+/// hands an attacker nothing redeemable, which is the same reasoning that puts
+/// a bcrypt hash rather than a password in `User.passwordHash`. The row is kept
+/// after use so a second click reports "already used" instead of silently
+/// issuing a fresh session.
+model AuthToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   String // PASSWORD_RESET | EMAIL_VERIFY
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+}
+
+// ----------------------------------------------------------------------------
+// Administrators
+//
+// Admin identities live in their own table, not as a role on User. That
+// separation is the point: nothing in the marketplace sign-up, login, password
+// reset or profile code can reach this table, so no bug on the public side can
+// mint or escalate an administrator. The two systems share no cookie, no token
+// format and no lookup path.
+//
+// An administrator's job on this platform is narrow and deliberate: verify the
+// documents and details submitted by contractors and companies. They are not
+// participants — they cannot post, quote, or read the private message threads
+// between two parties.
+// ----------------------------------------------------------------------------
+
+model AdminUser {
+  id String @id @default(cuid())
+
+  /// The staff identifier assigned by whoever created the account (e.g.
+  /// WF-ADM-004). Unlike the cuid it is chosen by a person, appears in the
+  /// audit trail, and is what one admin quotes to another.
+  adminCode String @unique
+
+  /// Login handle. Admins sign in with this, never with an email address, so a
+  /// leaked contact address is not half a credential.
+  username String @unique
+
+  /// Contact address for the person — used to reach them, never to log in.
+  email String @unique
+  name  String
+
+  passwordHash String
+
+  /// SUPER_ADMIN may manage the admin team; VERIFIER may only do verification
+  /// work. The first account provisioned on a platform is a SUPER_ADMIN.
+  role String @default("VERIFIER")
+
+  /// ACTIVE | REVOKED. A revoked admin keeps their history and their audit
+  /// trail but cannot sign in and has every live session killed.
+  status String @default("ACTIVE")
+
+  /// Forces a password change at next sign-in — set whenever somebody other
+  /// than the account holder has known the password, i.e. on creation and on
+  /// an administrative reset.
+  mustChangePassword Boolean @default(false)
+
+  // Per-account lockout. The IP-keyed rate limiter alone cannot stop a
+  // distributed guess at one account, so failures are also counted here.
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  lastLoginAt DateTime?
+  lastLoginIp String?
+
+  /// Who provisioned this account. SetNull rather than Cascade: deleting an
+  /// admin must never delete the admins they created.
+  createdById   String?
+  createdBy     AdminUser?  @relation("AdminCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAdmins AdminUser[] @relation("AdminCreator")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  sessions  AdminSession[]
+  auditLogs AuditLog[]
+
+  reviewedDocuments   Document[]          @relation("DocumentReviewer")
+  reviewedContractors ContractorProfile[] @relation("ContractorReviewer")
+  reviewedCompanies   CompanyProfile[]    @relation("CompanyReviewer")
+
+  @@index([status, createdAt])
+}
+
+/// A live admin sign-in.
+///
+/// Marketplace sessions are stateless JWTs, which is right for them: cheap, and
+/// revocable in bulk through User.tokenVersion. Admin sessions are the opposite
+/// trade — a server-side row per session, so that "revoke this person's access"
+/// takes effect on their very next request rather than whenever a cookie
+/// happens to expire, and so a live session list can be shown and individually
+/// terminated.
+///
+/// Only the SHA-256 of the token is stored. The token itself exists in the
+/// admin's cookie and nowhere else, so a leaked database dump does not hand
+/// anybody a working session.
+model AdminSession {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  ip        String?
+  userAgent String?
+
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([adminId, createdAt])
+  @@index([expiresAt])
+}
+
 // ----------------------------------------------------------------------------
 // Company side
+//
+// Registration is deliberately light. The client was clear that a company
+// should not have to disclose GST, PAN or anything commercially sensitive just
+// to look around: name, location, what they do, and what kind of contract
+// manpower they engage. Statutory fields exist but are optional throughout.
 // ----------------------------------------------------------------------------
 
 model CompanyProfile {
-  id              String   @id @default(cuid())
-  userId          String   @unique
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  companyName     String
-  entityType      String? // Pvt Ltd | LLP | Partnership | Proprietorship | PSU/Govt
-  industry        String?
-  contactName     String
-  contactMobile   String
-  contactEmail    String
-  city            String
-  district        String?
-  state           String
-  pincode         String?
-  gstin           String?
-  about           String?
+  id          String @id @default(cuid())
+  userId      String @unique
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName String
+
+  // Nature of work — "are they into service or manufacturing".
+  natureOfBusiness String? // MANUFACTURING | SERVICE | BOTH
+  industries       String[] @default([]) // sectors, e.g. tyre, steel, power
+  manpowerBand     String? // own/contract strength band, e.g. 500_1000
+
+  /// Which of the four contract categories this company engages. Used to
+  /// pre-select the posting form and to target contractor recommendations.
+  categoriesUsed String[] @default([])
+
+  entityType String?
+  website    String?
+
+  contactName        String
+  contactDesignation String?
+  contactMobile      String
+  contactEmail       String
+
+  city     String
+  district String?
+  state    String
+  pincode  String?
+
+  // Optional statutory identifiers — needed only when invoices are raised.
+  gstin String?
+  pan   String?
+  cin   String?
+
+  /// Principal-employer registration certificate under the CLRA Act. A company
+  /// engaging contract labour holds a registration; the contractor holds a
+  /// licence. Different documents, which is why this is not `labourLicenceNo`.
+  clraRegNo String?
+
+  /// Answers to the verification questions on /company/documents. Null means
+  /// the question has not been answered yet, false means the firm declared it
+  /// holds no such registration — a distinction a reviewer needs.
+  hasGst  Boolean?
+  hasPan  Boolean?
+  hasClra Boolean?
+
+  about String?
+
   verified        Boolean  @default(false)
   status          String   @default("PENDING") // PENDING | APPROVED | REJECTED
   moderationNotes String?
   createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 
-  jobs        Job[]
-  engagements Engagement[]
+  // Who last ruled on this registration, and when. A decision with no name
+  // against it is not a decision anybody can be asked about later.
+  reviewedAt DateTime?
+  reviewedById String?
+  reviewedBy   AdminUser? @relation("CompanyReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  documents      Document[]
+  requirements   Requirement[]
+  engagements    Engagement[]
+  contactUnlocks ContactUnlock[]
+  reviewsGiven   ContractorReview[]
 
   @@index([status, createdAt])
   @@index([state, city])
@@ -86,197 +277,429 @@ model CompanyProfile {
 // ----------------------------------------------------------------------------
 
 model ContractorProfile {
-  id                String  @id @default(cuid())
-  userId            String  @unique
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  firmName          String
-  entityType        String? // Proprietorship | Partnership | Pvt Ltd | LLP
-  ownerName         String
-  yearEstablished   Int?
-  address           String?
-  city              String
-  district          String?
-  state             String
-  pincode           String?
-  serviceAreas      String? // comma-separated cities/states served
+  id               String  @id @default(cuid())
+  userId           String  @unique
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firmName         String
+  entityType       String?
+  ownerName        String
+  ownerDesignation String?
+  yearEstablished  Int?
+  website          String?
+
+  address  String?
+  city     String
+  district String?
+  state    String
+  pincode  String?
+
+  /// States the firm actually operates in. This is the single most important
+  /// search filter: a plant in Chhattisgarh wants a contractor with people on
+  /// the ground in Chhattisgarh, not one whose whole bench sits in the south.
+  presenceStates String[] @default([])
+
+  /// Where the firm's workers are recruited from. Companies routinely ask for
+  /// manpower sourced from particular states.
+  workerSourceStates String[] @default([])
+
+  /// Which of the four contract categories the firm takes on.
+  categories String[] @default([])
+
+  /// Sectors the firm has actually worked in.
+  industries String[] @default([])
+
+  /// Specific roles/scopes the firm can supply, drawn from the role catalogues.
+  roles String[] @default([])
+
   willingOutstation Boolean @default(false)
 
-  // Statutory (self-declared; verified by admin against uploaded docs)
+  // Statutory (self-declared; verified by admin against uploaded documents)
   pan             String?
   gstin           String?
   labourLicenceNo String? // CLRA licence number
+  /// Udyam (MSME) registration number, e.g. UDYAM-MH-26-0012345. Optional —
+  /// plenty of established contractors never registered as an MSME.
+  udyamNo         String?
   esicNo          String?
   epfNo           String?
 
-  // Capacity
-  trades           String @default("[]") // JSON array of trade keys
-  totalWorkforce   Int    @default(0)
-  available        Int    @default(0)
-  mobilizationDays Int    @default(3)
+  /// Answers to the verification questions on /contractor/documents. Null means
+  /// unanswered, false means the firm declared it holds no such registration.
+  hasGst Boolean?
+  hasPan Boolean?
 
-  about           String?
-  rating          Float    @default(0)
-  ratingCount     Int      @default(0)
+  // Capacity
+  totalWorkforce   Int @default(0)
+  availableNow     Int @default(0)
+  mobilizationDays Int @default(7)
+
+  about String?
+
+  // Aggregate ratings. `rating` is the headline average across all parameters;
+  // the per-parameter columns are denormalised so the search can sort and
+  // filter on, say, statutory compliance without joining every review.
+  rating                Float @default(0)
+  ratingCount           Int   @default(0)
+  ratingDeployment      Float @default(0)
+  ratingCompliance      Float @default(0)
+  ratingWorkerPayment   Float @default(0)
+  ratingManpowerQuality Float @default(0)
+  ratingResponsiveness  Float @default(0)
+
   verified        Boolean  @default(false)
   status          String   @default("PENDING") // PENDING | APPROVED | REJECTED
   moderationNotes String?
   createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 
-  workers     Worker[]
-  documents   Document[]
-  bids        Bid[]
-  engagements Engagement[]
+  reviewedAt   DateTime?
+  reviewedById String?
+  reviewedBy   AdminUser? @relation("ContractorReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  clients        ContractorClient[]
+  capacities     ContractorCapacity[]
+  documents      Document[]
+  proposals      Proposal[]
+  engagements    Engagement[]
+  invites        RequirementInvite[]
+  contactUnlocks ContactUnlock[]
+  reviews        ContractorReview[]
 
   // Admin moderation queue, ordered by age.
   @@index([status, createdAt])
-  // "Find contractors": approved firms in a state, best-rated first.
+  // Search: approved firms in a state, best-rated first.
   @@index([status, state, verified, rating])
   @@index([status, verified, rating])
+  @@index([status, totalWorkforce])
 }
 
-model Worker {
-  id                String            @id @default(cuid())
-  contractorId      String
-  contractor        ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
-  name              String
-  gender            String? // M | F | O
-  age               Int?
-  trade             String
-  skillLevel        String            @default("SEMI") // SKILLED | SEMI | UNSKILLED
-  yearsExperience   Int?
-  nativeState       String?
-  expectedDailyWage Int?
-  availability      String            @default("AVAILABLE") // AVAILABLE | ENGAGED
-  createdAt         DateTime          @default(now())
-
-  @@index([contractorId, createdAt])
-  @@index([contractorId, trade, availability])
-}
-
-model Document {
+/// The contractor's client list — their track record, and the thing companies
+/// actually evaluate. "Yokohama Dahej: 200 manpower since 2019" tells a plant in
+/// Gujarat far more than a star rating does.
+model ContractorClient {
   id           String            @id @default(cuid())
   contractorId String
   contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
-  type         String // PAN | GST | LABOUR_LICENCE | ID | OTHER
-  fileName     String
-  data         Bytes // file contents stored in the DB (serverless-safe)
-  mimeType     String
-  size         Int
-  status       String            @default("PENDING") // PENDING | APPROVED | REJECTED
-  reviewNotes  String?
-  createdAt    DateTime          @default(now())
+
+  clientName String // the company served, e.g. "Yokohama Tyres"
+  industry   String? // sector of that client
+  siteCity   String
+  siteState  String
+  category   String? // which contract category was supplied there
+  scope      String? // short description, e.g. "Mould change, 3 shifts"
+
+  headcount   Int     @default(0) // manpower deployed at that site
+  startedYear Int?
+  endedYear   Int? // null while ongoing
+  ongoing     Boolean @default(true)
+
+  /// Set by an admin once the engagement has been corroborated (work order
+  /// sighted, client confirmed). Unverified entries still display, but are
+  /// labelled as self-declared.
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([contractorId, ongoing, headcount])
+  @@index([siteState, siteCity])
+  @@index([industry])
+}
+
+/// Deployed strength per contract category, so a company can see that a firm
+/// running 450 blue-collar staff also handles unskilled supply.
+model ContractorCapacity {
+  id           String            @id @default(cuid())
+  contractorId String
+  contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  category     String
+  strength     Int               @default(0)
+  notes        String?
+
+  @@unique([contractorId, category])
+  @@index([category, strength])
+}
+
+/// A statutory document uploaded for verification.
+///
+/// Both sides of the marketplace submit these, so the row belongs to exactly
+/// one of a contractor or a company — never both, never neither. Prisma cannot
+/// express that; a CHECK constraint in the migration does, so the invariant is
+/// enforced by the database rather than by every call site remembering it.
+model Document {
+  id String @id @default(cuid())
+
+  contractorId String?
+  contractor   ContractorProfile? @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+
+  companyId String?
+  company   CompanyProfile? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  type     String // see DOCUMENT_TYPES in lib/constants
+  fileName String
+  data     Bytes // file contents stored in the DB (serverless-safe)
+  mimeType String
+  size     Int
+
+  status      String  @default("PENDING") // PENDING | APPROVED | REJECTED
+  reviewNotes String?
+
+  reviewedAt   DateTime?
+  reviewedById String?
+  reviewedBy   AdminUser? @relation("DocumentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
 
   @@index([contractorId, createdAt])
+  @@index([companyId, createdAt])
   @@index([status, createdAt])
 }
 
 // ----------------------------------------------------------------------------
-// Jobs, bids, engagement
+// Requirements, proposals, engagement
 // ----------------------------------------------------------------------------
 
-model Job {
-  id                    String         @id @default(cuid())
-  companyId             String
-  company               CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  title                 String
-  description           String?
-  city                  String
-  district              String?
-  state                 String
-  pincode               String?
-  startDate             DateTime?
-  durationDays          Int?
-  shift                 String? // DAY | NIGHT | ROTATING
-  accommodationProvided Boolean        @default(false)
-  foodProvided          Boolean        @default(false)
-  urgency               String         @default("NORMAL") // URGENT | NORMAL | PLANNED
-  wageOffered           Int? // indicative budget per worker/day
-  status                String         @default("OPEN") // OPEN | CLOSED | FILLED | EXPIRED
-  /// Jobs stop surfacing in matching after this. Without it, "urgent" postings
-  /// linger indefinitely and pollute every contractor's feed.
-  expiresAt             DateTime?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+/// A requirement posted by a company. `category` decides the shape of the rest
+/// of the record: staffing categories carry RequirementRole rows with
+/// headcounts, while a job contract carries a scope of work and an output
+/// target and deliberately has no headcount at all — deciding how many people
+/// to deploy is the contractor's commercial call.
+model Requirement {
+  id        String         @id @default(cuid())
+  companyId String
+  company   CompanyProfile @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  lines       JobLine[]
-  bids        Bid[]
+  category String // one of the four contract categories
+  title    String
+  industry String?
+
+  /// Free-text job description for staffing; scope of work for a job contract.
+  description String?
+
+  // --- Job-contract-only fields -------------------------------------------
+  scopeKey       String? // e.g. mould_drum_change
+  outputQuantity Int? // e.g. 300
+  outputUnit     String? // e.g. tonne
+  outputPeriod   String? // e.g. "per day"
+  deliverables   String?
+
+  // --- Location ------------------------------------------------------------
+  siteName String?
+  city     String
+  district String?
+  state    String
+  pincode  String?
+
+  // --- Timing & conditions -------------------------------------------------
+  startDate      DateTime?
+  durationType   String? // SHORT | MEDIUM | LONG | ONGOING
+  durationMonths Int?
+  shift          String? // GENERAL | DAY | NIGHT | ROTATING
+  urgency        String    @default("NORMAL") // URGENT | NORMAL | PLANNED
+
+  accommodationProvided Boolean @default(false)
+  transportProvided     Boolean @default(false)
+  foodProvided          Boolean @default(false)
+  ppeProvided           Boolean @default(false)
+
+  // --- Commercials ---------------------------------------------------------
+  /// What the company expects to be quoted against. Constrained to the bases
+  /// valid for the category (per person / month for staffing, per tonne and
+  /// friends for a job contract).
+  preferredRateBasis String?
+  indicativeBudget   Int?
+
+  // --- Lifecycle -----------------------------------------------------------
+  status    String    @default("OPEN") // OPEN | CLOSED | AWARDED | EXPIRED
+  /// Requirements stop surfacing in the feed after this. Without it, "urgent"
+  /// postings linger indefinitely and pollute every contractor's feed.
+  expiresAt DateTime?
+
+  viewCount Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  roles       RequirementRole[]
+  proposals   Proposal[]
   engagements Engagement[]
+  invites     RequirementInvite[]
 
   // The contractor-facing feed: open, unexpired, newest first.
   @@index([status, expiresAt, createdAt])
-  // A company's own job list.
+  // Feed narrowed by category — the primary contractor-side filter.
+  @@index([status, category, expiresAt])
+  // A company's own posting list.
   @@index([companyId, createdAt])
   // Location-narrowed search.
   @@index([status, state, city])
 }
 
-model JobLine {
-  id          String @id @default(cuid())
-  jobId       String
-  job         Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  trade       String
-  headcount   Int
-  skillLevel  String @default("SEMI")
-  wageOffered Int?
+/// One line of a staffing requirement: role plus headcount. Job contracts have
+/// none of these by design.
+model RequirementRole {
+  id            String      @id @default(cuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
 
-  @@index([jobId])
-  // Lets matching narrow to jobs requiring a contractor's trades in SQL.
-  @@index([trade, skillLevel])
+  role           String
+  headcount      Int
+  experienceBand String? // FRESHER | 0_2 | 2_5 | 5_10 | 10_PLUS
+  qualification  String? // ITI | DIPLOMA | ENGINEERING | ...
+  indicativeWage Int? // per person, in the requirement's rate basis
+  notes          String?
+
+  @@index([requirementId])
+  // Lets the feed narrow to requirements needing a contractor's roles in SQL.
+  @@index([role])
 }
 
-model Bid {
-  id                  String            @id @default(cuid())
-  jobId               String
-  job                 Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  contractorId        String
-  contractor          ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
-  ratePerWorkerPerDay Int
-  headcountOffered    Int
-  mobilizationDays    Int
-  notes               String?
-  status              String            @default("SUBMITTED") // SUBMITTED | SHORTLISTED | ACCEPTED | REJECTED
-  createdAt           DateTime          @default(now())
+/// A contractor's response to a requirement. Shape adapts to the category:
+/// staffing proposals carry `headcountOffered`; job-contract proposals leave it
+/// null and instead quote a rate against the output basis.
+model Proposal {
+  id            String            @id @default(cuid())
+  requirementId String
+  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  contractorId  String
+  contractor    ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+
+  rateBasis  String // PER_PERSON_MONTH | PER_TONNE | LUMPSUM_PROJECT | ...
+  rateAmount Int
+
+  /// Null for job contracts — the contractor decides deployment, so quoting a
+  /// headcount there would misrepresent the commercial model.
+  headcountOffered Int?
+
+  /// Optional, and only meaningful for a job contract: the contractor may
+  /// volunteer the crew size they have in mind without it being a commitment.
+  indicativeCrewSize Int?
+
+  mobilizationDays Int     @default(7)
+  validityDays     Int     @default(30)
+  coverNote        String?
+
+  status    String   @default("SUBMITTED") // SUBMITTED | SHORTLISTED | ACCEPTED | REJECTED | WITHDRAWN
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   engagement Engagement?
 
-  @@unique([jobId, contractorId])
-  // Company reviewing bids on one job; also backs the awarded-headcount sum.
-  @@index([jobId, status])
-  // "My bids" for a contractor.
+  @@unique([requirementId, contractorId])
+  // Company reviewing proposals on one requirement; also backs the awarded sum.
+  @@index([requirementId, status])
+  // "My proposals" for a contractor.
   @@index([contractorId, createdAt])
 }
 
-/// An engagement is the commercial record of an awarded bid. These are retained
-/// deliberately: every relation is Restrict, so a job, party or bid that has an
-/// engagement cannot be deleted out from under it. Erasure requests are served by
-/// anonymising the User, not by deleting the trade history.
+/// A company reaching out to a contractor found through search, attached to a
+/// specific requirement. This is what makes the search actionable rather than
+/// just a directory listing.
+model RequirementInvite {
+  id            String            @id @default(cuid())
+  requirementId String
+  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  contractorId  String
+  contractor    ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  message       String?
+  status        String            @default("SENT") // SENT | VIEWED | RESPONDED | DECLINED
+  createdAt     DateTime          @default(now())
+
+  @@unique([requirementId, contractorId])
+  @@index([contractorId, status, createdAt])
+}
+
+/// An engagement is the commercial record of an accepted proposal. These are
+/// retained deliberately: every relation is Restrict, so a requirement, party or
+/// proposal that has an engagement cannot be deleted out from under it. Erasure
+/// requests are served by anonymising the User, not by deleting trade history.
 model Engagement {
-  id                 String            @id @default(cuid())
-  jobId              String
-  job                Job               @relation(fields: [jobId], references: [id], onDelete: Restrict)
-  companyId          String
-  company            CompanyProfile    @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  contractorId       String
-  contractor         ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Restrict)
-  bidId              String            @unique
-  bid                Bid               @relation(fields: [bidId], references: [id], onDelete: Restrict)
-  status             String            @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
-  platformFeePercent Float
-  // computed snapshot for display (rate * headcount * duration)
-  estimatedValue     Int               @default(0)
-  estimatedFee       Int               @default(0)
-  companyRating      Int?
-  contractorRating   Int?
-  createdAt          DateTime          @default(now())
+  id            String            @id @default(cuid())
+  requirementId String
+  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Restrict)
+  companyId     String
+  company       CompanyProfile    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contractorId  String
+  contractor    ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Restrict)
+  proposalId    String            @unique
+  proposal      Proposal          @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+
+  status String @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+
+  /// Snapshot of the commercials at award time, so later edits to the proposal
+  /// or requirement can't rewrite history.
+  rateBasis      String
+  rateAmount     Int
+  headcount      Int?
+  estimatedValue Int    @default(0)
+
+  /// Reserved for a future paid tier. No payment is collected today and these
+  /// are not surfaced anywhere in the UI — see Setting.paymentsEnabled.
+  platformFeePercent Float @default(0)
+  estimatedFee       Int   @default(0)
+
+  /// The contractor's rating of the company. The company's rating of the
+  /// contractor is richer and lives in ContractorReview.
+  companyRating Int?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
 
   messages Message[]
+  review   ContractorReview?
 
   @@index([companyId, createdAt])
   @@index([contractorId, createdAt])
-  @@index([jobId])
+  @@index([requirementId])
   @@index([status])
-  // Backs the average-rating recomputation.
-  @@index([contractorId, contractorRating])
+}
+
+/// A company's multi-parameter rating of a contractor, filed once per completed
+/// engagement. Averages of these columns are denormalised onto
+/// ContractorProfile so search can rank without aggregating on every query.
+model ContractorReview {
+  id           String            @id @default(cuid())
+  engagementId String            @unique
+  engagement   Engagement        @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  contractorId String
+  contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  companyId    String
+  company      CompanyProfile    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Each 1–5. Keys mirror RATING_PARAMETERS in lib/constants.
+  deployment      Int
+  compliance      Int
+  workerPayment   Int
+  manpowerQuality Int
+  responsiveness  Int
+
+  /// Mean of the five parameters, stored so the average-of-averages maths and
+  /// the display value can't drift apart.
+  overall Float
+
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@index([contractorId, createdAt])
+  @@index([companyId, createdAt])
+}
+
+/// Records a company revealing a contractor's contact details.
+///
+/// Contact masking is OFF today — the client wants the platform to feel
+/// generous while the network is being built. The table is populated regardless
+/// so that when a paid tier arrives there is already a usage history to meter
+/// against, and no migration is needed to start enforcing quotas.
+model ContactUnlock {
+  id           String            @id @default(cuid())
+  companyId    String
+  company      CompanyProfile    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contractorId String
+  contractor   ContractorProfile @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+  source       String            @default("SEARCH") // SEARCH | PROPOSAL | INVITE
+  createdAt    DateTime          @default(now())
+
+  @@unique([companyId, contractorId])
+  // Backs the "reveals used this month" quota check.
+  @@index([companyId, createdAt])
 }
 
 model Message {
@@ -312,17 +735,43 @@ model Notification {
   @@index([userId, createdAt])
 }
 
+/// Append-only record of every privileged action.
+///
+/// An entry is attributed to exactly one of two actor kinds: a marketplace user
+/// or an administrator. Both foreign keys are nullable and both are SetNull, so
+/// removing an account can never remove the evidence of what it did — which is
+/// why `actorLabel` exists as well. It is written at the time of the action and
+/// survives the actor, so a deleted admin still reads as "Priya Nair (WF-ADM-004)"
+/// rather than as a dangling id.
 model AuditLog {
-  id        String   @id @default(cuid())
-  actorId   String
-  actor     User     @relation(fields: [actorId], references: [id])
-  action    String
-  detail    String?
+  id String @id @default(cuid())
+
+  actorId String?
+  actor   User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  adminId String?
+  admin   AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  /// USER | ADMIN | SYSTEM
+  actorType String @default("USER")
+
+  /// Human-readable actor, frozen at write time.
+  actorLabel String?
+
+  action String
+  detail String?
+
+  /// Source address of the request, for admin actions. Answering "who approved
+  /// this firm" is only half an answer without "from where".
+  ip String?
+
   createdAt DateTime @default(now())
 
   @@index([createdAt])
   @@index([actorId, createdAt])
+  @@index([adminId, createdAt])
   @@index([action, createdAt])
+  @@index([actorType, createdAt])
 }
 
 /// Fixed-window rate-limit counters. Backed by Postgres rather than memory
@@ -337,12 +786,27 @@ model RateLimit {
 }
 
 model Setting {
-  id                     Int     @id @default(1)
-  platformName           String  @default("ShramSetu")
-  platformFeePercent     Float   @default(3)
-  paymentsEnabled        Boolean @default(false)
-  /// When on, a company must be admin-approved before it can post jobs. Off by
-  /// default so the marketplace isn't gated on manual review from day one; turn
-  /// it on once there's an ops team to work the queue.
+  id           Int    @id @default(1)
+  platformName String @default("WorkForge")
+
+  /// When on, a company must be admin-approved before it can post requirements.
+  /// Off by default so the marketplace isn't gated on manual review from day
+  /// one; turn it on once there's an ops team to work the queue.
   requireCompanyApproval Boolean @default(false)
+
+  /// When on, a contractor must be approved before submitting proposals. On by
+  /// default — an unvetted firm quoting on live requirements is the failure
+  /// mode companies complain about first.
+  requireContractorApproval Boolean @default(true)
+
+  /// Contact gating. Off means every approved company sees contractor phone and
+  /// email immediately, which is what the client wants while the network grows.
+  /// Turning it on masks details and meters reveals against the quota below.
+  contactMaskingEnabled      Boolean @default(false)
+  freeContactRevealsPerMonth Int     @default(10)
+
+  /// Reserved for a future paid tier. Nothing in the product charges money
+  /// today and no payment provider is integrated.
+  paymentsEnabled    Boolean @default(false)
+  platformFeePercent Float   @default(0)
 }

@@ -5,7 +5,11 @@ import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { messageSchema } from "@/lib/validation";
 import { fieldErrors, type ActionState } from "@/lib/utils";
-import { getEngagementWithParties, isParticipant } from "@/lib/engagements";
+import {
+  counterpartyUserId,
+  getEngagementWithParties,
+  isParticipant,
+} from "@/lib/engagements";
 import { notify } from "@/lib/notify";
 import { RATE_LIMITS, rateLimit, retryMessage } from "@/lib/ratelimit";
 
@@ -37,11 +41,10 @@ export async function sendMessage(_prev: ActionState, formData: FormData): Promi
     data: { engagementId: eng.id, senderId: user.id, body: parsed.data.body },
   });
 
-  const otherUserId = eng.company.user.id === user.id ? eng.contractor.user.id : eng.company.user.id;
   await notify({
-    userId: otherUserId,
+    userId: counterpartyUserId(eng, user.id),
     type: "MESSAGE",
-    body: `New message from ${user.name} about "${eng.job.title}".`,
+    body: `New message from ${user.name} about "${eng.requirement.title}".`,
     link: `/engagements/${eng.id}`,
   });
 

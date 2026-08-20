@@ -1,24 +1,20 @@
-import { requireRole } from "@/lib/auth";
-import { SubNav } from "@/components/SubNav";
+import type { Metadata } from "next";
+
+/**
+ * Bare wrapper for everything under /admin.
+ *
+ * It deliberately holds no authentication. The sign-in page lives under this
+ * path too, and a layout that guarded here could never render it. The gate is
+ * one level down, in (panel)/layout.tsx, which wraps every route except the
+ * login form.
+ */
+export const metadata: Metadata = {
+  title: { default: "Verification console", template: "%s · WorkForge Admin" },
+  robots: { index: false, follow: false, nocache: true },
+};
 
 export const dynamic = "force-dynamic";
 
-const LINKS = [
-  { href: "/admin", label: "Overview" },
-  { href: "/admin/contractors", label: "Contractors" },
-  { href: "/admin/companies", label: "Companies" },
-  { href: "/admin/settings", label: "Settings" },
-];
-
-export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  await requireRole("ADMIN");
-  return (
-    <div>
-      <div className="mb-2">
-        <span className="badge bg-slate-900 text-white">Admin</span>
-      </div>
-      <SubNav links={LINKS} />
-      {children}
-    </div>
-  );
+export default function AdminRootLayout({ children }: { children: React.ReactNode }) {
+  return children;
 }

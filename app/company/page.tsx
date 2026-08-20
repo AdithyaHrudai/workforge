@@ -1,106 +1,137 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { StatusBadge, VerifiedBadge } from "@/components/Badge";
-import { formatDate } from "@/lib/utils";
+import { getSettings } from "@/lib/settings";
+import { Notice } from "@/components/Badge";
+import { EmptyState, PageHeader, StatCard } from "@/components/ui";
+import { RequirementCard } from "@/components/RequirementCard";
+import { CATEGORIES } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
-function Stat({ label, value, href }: { label: string; value: number | string; href: string }) {
-  return (
-    <Link href={href} className="card transition hover:border-brand-400 hover:shadow">
-      <p className="text-3xl font-extrabold text-slate-900">{value}</p>
-      <p className="text-sm text-slate-500">{label}</p>
-    </Link>
-  );
-}
+export const metadata: Metadata = { title: "Dashboard" };
 
-export default async function CompanyHome() {
+export default async function CompanyDashboard() {
   const user = await requireRole("COMPANY");
-  const company = await prisma.companyProfile.findUnique({
-    where: { userId: user.id },
-    include: {
-      jobs: {
-        orderBy: { createdAt: "desc" },
-        include: { _count: { select: { bids: true } } },
+  const company = await prisma.companyProfile.findUnique({ where: { userId: user.id } });
+  if (!company) redirect("/company/profile");
+
+  const settings = await getSettings();
+  const now = new Date();
+
+  const [openCount, proposalCount, activeEngagements, awaitingReview, recent] = await Promise.all([
+    prisma.requirement.count({
+      where: {
+        companyId: company.id,
+        status: "OPEN",
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
-      _count: { select: { engagements: true } },
-    },
-  });
+    }),
+    prisma.proposal.count({
+      where: { requirement: { companyId: company.id }, status: "SUBMITTED" },
+    }),
+    prisma.engagement.count({ where: { companyId: company.id, status: "ACTIVE" } }),
+    prisma.engagement.count({
+      where: { companyId: company.id, status: "COMPLETED", review: null },
+    }),
+    prisma.requirement.findMany({
+      where: { companyId: company.id },
+      include: { roles: true, _count: { select: { proposals: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    }),
+  ]);
 
-  if (!company) {
-    return (
-      <div className="card text-center">
-        <h1 className="text-xl font-bold text-slate-900">Welcome to ShramSetu 🏗️</h1>
-        <p className="mt-2 text-sm text-slate-600">Set up your company profile to start posting requirements.</p>
-        <Link href="/company/profile" className="btn-primary mt-4">
-          Set up company profile
-        </Link>
-      </div>
-    );
-  }
-
-  const openJobs = company.jobs.filter((j) => j.status === "OPEN").length;
-  const totalBids = company.jobs.reduce((s, j) => s + j._count.bids, 0);
+  const awaitingApproval = settings.requireCompanyApproval && company.status !== "APPROVED";
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">{company.companyName}</h1>
-          <p className="text-sm text-slate-500">
-            {company.city}, {company.state}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {company.verified && <VerifiedBadge />}
-          <Link href="/company/jobs/new" className="btn-primary">
-            + Post a job
+    <div className="space-y-8">
+      <PageHeader
+        title={company.companyName}
+        subtitle={`${company.city}, ${company.state}`}
+        action={
+          <Link href="/company/requirements/new" className="btn-primary">
+            Post a requirement
           </Link>
-        </div>
+        }
+      />
+
+      {awaitingApproval && (
+        <Notice tone="warning">
+          {company.status === "REJECTED"
+            ? "Your company registration was not approved. Please review your profile or contact support."
+            : "Your company is awaiting verification. You'll be able to post requirements once it's approved."}
+        </Notice>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Open requirements" value={openCount} href="/company/requirements" />
+        <StatCard
+          label="New proposals"
+          value={proposalCount}
+          hint="Awaiting your review"
+          href="/company/requirements"
+        />
+        <StatCard label="Active engagements" value={activeEngagements} href="/engagements" />
+        <StatCard
+          label="Ratings pending"
+          value={awaitingReview}
+          hint="Completed work you haven't rated"
+          href="/engagements"
+        />
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <Stat label="Open jobs" value={openJobs} href="/company/jobs" />
-        <Stat label="Bids received" value={totalBids} href="/company/jobs" />
-        <Stat label="Engagements" value={company._count.engagements} href="/engagements" />
-      </div>
-
-      <div className="card">
+      <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-semibold text-slate-900">Recent jobs</h2>
-          <Link href="/company/jobs" className="text-sm font-medium text-brand-600 hover:underline">
+          <h2 className="section-title">Recent requirements</h2>
+          <Link href="/company/requirements" className="text-sm font-medium text-brand-700 hover:underline">
             View all
           </Link>
         </div>
-        {company.jobs.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            No jobs yet.{" "}
-            <Link href="/company/jobs/new" className="font-medium text-brand-600 hover:underline">
-              Post your first requirement.
-            </Link>
-          </p>
+
+        {recent.length === 0 ? (
+          <EmptyState
+            title="You haven't posted anything yet"
+            description="Post your first requirement and matching contractors will see it straight away."
+            action={
+              <Link href="/company/requirements/new" className="btn-primary">
+                Post a requirement
+              </Link>
+            }
+          />
         ) : (
-          <ul className="divide-y divide-slate-100">
-            {company.jobs.slice(0, 6).map((job) => (
-              <li key={job.id} className="flex items-center justify-between gap-3 py-3">
-                <div className="min-w-0">
-                  <Link href={`/company/jobs/${job.id}`} className="truncate font-medium text-slate-800 hover:text-brand-700">
-                    {job.title}
-                  </Link>
-                  <p className="truncate text-xs text-slate-500">
-                    {job.city}, {job.state} · posted {formatDate(job.createdAt)}
-                  </p>
-                </div>
-                <div className="flex flex-none items-center gap-3">
-                  <span className="text-sm text-slate-500">{job._count.bids} bids</span>
-                  <StatusBadge status={job.status} />
-                </div>
-              </li>
+          // Two up on wide screens — one requirement card per full 1440px row
+          // left most of the viewport empty.
+          <div className="grid gap-4 xl:grid-cols-2">
+            {recent.map((requirement) => (
+              <RequirementCard
+                key={requirement.id}
+                requirement={requirement}
+                href={`/company/requirements/${requirement.id}`}
+                showCompany={false}
+              />
             ))}
-          </ul>
+          </div>
         )}
-      </div>
+      </section>
+
+      <section>
+        <h2 className="section-title mb-3">Start a new requirement</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {CATEGORIES.map((c) => (
+            <Link
+              key={c.value}
+              href={`/company/requirements/new?category=${c.value}`}
+              className="card card-hover"
+            >
+              <p className="font-semibold text-slate-900">{c.short}</p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">{c.summary}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

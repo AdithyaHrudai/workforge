@@ -1,9 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 
-const SESSION_COOKIE = "ss_session";
+const SESSION_COOKIE = "wf_session";
+const ADMIN_SESSION_COOKIE = "wf_admin";
 
-const PROTECTED = ["/dashboard", "/company", "/contractor", "/admin", "/engagements", "/notifications"];
+// `/contractors` (the firm directory) sits here alongside `/contractor` (a
+// contractor's own area): both are members-only. Matching is on `prefix + "/"`
+// or an exact hit, so the two never shadow each other.
+const PROTECTED = [
+  "/account",
+  "/dashboard",
+  "/company",
+  "/contractor",
+  "/contractors",
+  "/engagements",
+  "/notifications",
+];
+
+/** The one page under /admin that an unauthenticated request may reach. */
+const ADMIN_LOGIN_PATH = "/admin/login";
 
 /**
  * Edge-side gate. This only proves the session token is well-formed and signed;
@@ -53,6 +68,20 @@ function buildCsp(nonce: string): string {
   ].join("; ");
 }
 
+/**
+ * Headers applied to everything under /admin.
+ *
+ * The console lists people's names, contact numbers and statutory identifiers.
+ * None of it should be indexed, cached by an intermediary, or leaked as a
+ * referrer to whatever an admin clicks through to next.
+ */
+function applyAdminHeaders(res: NextResponse): NextResponse {
+  res.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  res.headers.set("Cache-Control", "no-store, max-age=0, must-revalidate");
+  res.headers.set("Referrer-Policy", "no-referrer");
+  return res;
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -62,6 +91,36 @@ export async function middleware(req: NextRequest) {
   // Next reads x-nonce off the *request* headers to nonce its script tags.
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set("x-nonce", nonce);
+  // Lets the root layout tell the admin console apart from the marketplace and
+  // pick the right chrome. Server components cannot otherwise see the path.
+  requestHeaders.set("x-pathname", pathname);
+
+  const isAdminArea = pathname === "/admin" || pathname.startsWith("/admin/");
+
+  if (isAdminArea) {
+    const isLoginPage = pathname === ADMIN_LOGIN_PATH;
+    // Presence only. Admin sessions are opaque tokens validated against the
+    // database, which the edge runtime cannot reach — `getAdminIdentity()` in
+    // the panel layout is the authority. This just spares the app a render for
+    // requests that plainly have no session.
+    const hasAdminCookie = Boolean(req.cookies.get(ADMIN_SESSION_COOKIE)?.value);
+
+    if (!isLoginPage && !hasAdminCookie) {
+      const url = req.nextUrl.clone();
+      url.pathname = ADMIN_LOGIN_PATH;
+      url.search = "";
+      // Only same-site paths are ever echoed back, and only under /admin, so
+      // the post-login redirect cannot be pointed at another origin.
+      if (pathname.startsWith("/admin/")) url.searchParams.set("next", pathname);
+      const redirectRes = NextResponse.redirect(url);
+      redirectRes.headers.set("Content-Security-Policy", csp);
+      return applyAdminHeaders(redirectRes);
+    }
+
+    const adminRes = NextResponse.next({ request: { headers: requestHeaders } });
+    adminRes.headers.set("Content-Security-Policy", csp);
+    return applyAdminHeaders(adminRes);
+  }
 
   const needsAuth = PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"));
 

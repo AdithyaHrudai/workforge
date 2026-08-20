@@ -1,10 +1,12 @@
 {
-  "name": "shramsetu",
+  "name": "workforge",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "go": "node scripts/start.mjs",
+    "stop": "node scripts/start.mjs --stop",
     "start": "next start",
     "lint": "next lint",
     "db:push": "prisma db push",
@@ -13,6 +15,10 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "admin:create": "node scripts/create-admin.mjs",
+    "db:local": "node scripts/local-db.mjs",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:admin": "node scripts/admin-e2e.mjs",
     "postinstall": "prisma generate"
   },
   "prisma": {
@@ -33,6 +39,7 @@
     "@types/react": "18.3.11",
     "@types/react-dom": "18.3.0",
     "autoprefixer": "10.4.20",
+    "playwright": "1.61.0",
     "postcss": "8.4.47",
     "prisma": "5.22.0",
     "tailwindcss": "3.4.14",

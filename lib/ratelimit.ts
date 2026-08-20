@@ -32,10 +32,39 @@ export const RATE_LIMITS = {
   loginByIp: { limit: 10, windowSeconds: 300 },
   /** Per-account login attempts — blunts distributed guessing at one account. */
   loginByEmail: { limit: 5, windowSeconds: 900 },
+  /**
+   * The admin console, held tighter than the marketplace login. There is no
+   * self-service admin account, so a sustained burst against it is never a
+   * forgetful user.
+   *
+   * The per-IP bucket is the looser of the two on purpose: an ops team shares
+   * one office address, and several people signing in at the start of a shift
+   * must not lock the whole floor out of the console. The real protection is
+   * the per-username bucket plus the per-account lockout in lib/admin-auth.ts,
+   * neither of which a second admin's sign-in can consume.
+   */
+  adminLoginByIp: { limit: 20, windowSeconds: 900 },
+  adminLoginByUsername: { limit: 5, windowSeconds: 900 },
   /** Signups per IP — stops automated account farming. */
   register: { limit: 5, windowSeconds: 3600 },
-  /** Bid submissions per contractor. */
-  bid: { limit: 30, windowSeconds: 3600 },
+  /**
+   * Password-reset requests. The per-address bucket matters more than the
+   * per-IP one: without it, anyone can have a stranger's inbox filled with
+   * reset mail, and every send retires the link that person may be mid-way
+   * through using.
+   */
+  resetByIp: { limit: 10, windowSeconds: 900 },
+  resetByEmail: { limit: 3, windowSeconds: 3600 },
+  /** Verification mail a signed-in user can ask to have re-sent. */
+  emailVerify: { limit: 5, windowSeconds: 3600 },
+  /** Password changes and account edits by a signed-in user. */
+  accountUpdate: { limit: 10, windowSeconds: 3600 },
+  /** Proposal submissions per contractor. */
+  proposal: { limit: 30, windowSeconds: 3600 },
+  /** Requirement postings per company — stops listing spam. */
+  posting: { limit: 20, windowSeconds: 3600 },
+  /** Invitations sent to contractors from search. */
+  invite: { limit: 50, windowSeconds: 3600 },
   /** Chat messages per user. */
   message: { limit: 60, windowSeconds: 300 },
   /** Document uploads per contractor. */

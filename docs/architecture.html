@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkForge — System Architecture</title>
+<meta name="description" content="System architecture reference for WorkForge — India's contract manpower marketplace. Domain model, runtime layers, data model, access matrix and security posture.">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="WorkForge — System Architecture">
+<meta property="og:type" content="article">
+<meta property="og:description" content="How WorkForge is built: four contract categories, server-rendered architecture, 18 data models, and the access and security model.">
+<style>
+  /* Minimal reset — the hosted artifact runtime supplies one; a standalone
+     file has to carry its own. */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+  img, svg { max-width: 100%; height: auto; display: block; }
+  table { border-collapse: collapse; }
+  h1, h2, h3, h4, p, dl, dd, figure { margin: 0; }
+  ul { margin: 0; padding: 0; }
+  li { list-style-position: outside; }
+  .layer-body ul { list-style: disc; }
+</style>
+<style>
+  /* ---------------------------------------------------------------------
+     Tokens. Palette is lifted from the product's own Tailwind config —
+     brand steel blue and forge amber — so this reads as WorkForge's
+     document rather than a generic template. Neutrals carry a blue bias
+     toward the accent instead of sitting at pure grey.
+     --------------------------------------------------------------------- */
+  :root {
+    --ground: #f5f8fb;
+    --surface: #ffffff;
+    --surface-sunk: #eef3f8;
+    --ink: #16233a;
+    --ink-soft: #4a5b73;
+    --ink-faint: #7a8ba3;
+    --steel: #20487b;
+    --steel-bright: #3872b5;
+    --steel-wash: #e7eff8;
+    --forge: #c24b09;
+    --forge-wash: #fdf0e3;
+    --rule: #d9e2ec;
+    --rule-soft: #e8eef4;
+    --band: #101a29;
+    --band-ink: #e8eff7;
+
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", "Menlo", "Consolas", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 68ch;
+    --pad: clamp(1.25rem, 4vw, 3.5rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0d151f;
+      --surface: #151f2c;
+      --surface-sunk: #101a26;
+      --ink: #e4ecf5;
+      --ink-soft: #a3b4c9;
+      --ink-faint: #71829a;
+      --steel: #7aa8dd;
+      --steel-bright: #8fb5e0;
+      --steel-wash: #1a2942;
+      --forge: #fb9c38;
+      --forge-wash: #2c1d0f;
+      --rule: #26344a;
+      --rule-soft: #1d2937;
+      --band: #060c14;
+      --band-ink: #e4ecf5;
+    }
+  }
+
+  /* The viewer's toggle stamps data-theme on :root and must win both ways. */
+  :root[data-theme="dark"] {
+    --ground: #0d151f;
+    --surface: #151f2c;
+    --surface-sunk: #101a26;
+    --ink: #e4ecf5;
+    --ink-soft: #a3b4c9;
+    --ink-faint: #71829a;
+    --steel: #7aa8dd;
+    --steel-bright: #8fb5e0;
+    --steel-wash: #1a2942;
+    --forge: #fb9c38;
+    --forge-wash: #2c1d0f;
+    --rule: #26344a;
+    --rule-soft: #1d2937;
+    --band: #060c14;
+    --band-ink: #e4ecf5;
+  }
+  :root[data-theme="light"] {
+    --ground: #f5f8fb;
+    --surface: #ffffff;
+    --surface-sunk: #eef3f8;
+    --ink: #16233a;
+    --ink-soft: #4a5b73;
+    --ink-faint: #7a8ba3;
+    --steel: #20487b;
+    --steel-bright: #3872b5;
+    --steel-wash: #e7eff8;
+    --forge: #c24b09;
+    --forge-wash: #fdf0e3;
+    --rule: #d9e2ec;
+    --rule-soft: #e8eef4;
+    --band: #101a29;
+    --band-ink: #e8eff7;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1140px; margin: 0 auto; padding: 0 var(--pad); }
+
+  /* --- Header band ----------------------------------------------------- */
+  .band {
+    background: var(--band);
+    color: var(--band-ink);
+    padding: clamp(3rem, 8vw, 5.5rem) 0 clamp(2.5rem, 6vw, 4rem);
+    border-bottom: 3px solid var(--forge);
+  }
+  .band .wrap { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .wordmark {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--forge);
+  }
+  h1 {
+    font-size: clamp(2.1rem, 6vw, 3.6rem);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+    margin: 0;
+    max-width: 20ch;
+    text-wrap: balance;
+  }
+  .standfirst {
+    max-width: var(--measure);
+    font-size: clamp(1rem, 2vw, 1.15rem);
+    color: #a9bdd4;
+    margin: 0;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    gap: 1px;
+    background: rgba(255,255,255,0.13);
+    border: 1px solid rgba(255,255,255,0.13);
+    margin-top: 0.75rem;
+  }
+  .fact { background: var(--band); padding: 0.9rem 1.1rem; }
+  .fact dt {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #7f95b0;
+    margin: 0 0 0.3rem;
+  }
+  .fact dd {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 750;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .fact dd span { font-size: 0.8rem; font-weight: 500; color: #8fa5be; }
+
+  /* --- Sections -------------------------------------------------------- */
+  section { padding: clamp(2.75rem, 6vw, 4.5rem) 0; border-bottom: 1px solid var(--rule); }
+  section:last-of-type { border-bottom: 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--forge);
+    margin: 0 0 0.7rem;
+  }
+  h2 {
+    font-size: clamp(1.5rem, 3.4vw, 2.1rem);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    font-weight: 750;
+    margin: 0 0 0.85rem;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 2rem 0 0.6rem;
+  }
+  p { max-width: var(--measure); margin: 0 0 1rem; color: var(--ink-soft); }
+  p strong { color: var(--ink); font-weight: 650; }
+  p.lead { font-size: 1.06rem; color: var(--ink); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code {
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule-soft);
+    padding: 0.08em 0.36em;
+    border-radius: 3px;
+    color: var(--steel);
+    white-space: nowrap;
+  }
+
+  /* --- Tables ---------------------------------------------------------- */
+  .scroll { overflow-x: auto; margin: 1.5rem 0; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.72rem 0.95rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    background: var(--surface-sunk);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td strong { font-weight: 650; color: var(--ink); }
+  td .sub { display: block; color: var(--ink-faint); font-size: 0.83em; margin-top: 0.15rem; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* --- Layer stack ----------------------------------------------------- */
+  .stack { display: flex; flex-direction: column; gap: 3px; margin: 1.75rem 0; }
+  .layer {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    gap: 1rem 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--steel-bright);
+    padding: 1rem 1.25rem;
+  }
+  .layer[data-tier="edge"] { border-left-color: var(--forge); }
+  .layer[data-tier="data"] { border-left-color: var(--ink-faint); }
+  .layer-name { font-weight: 700; letter-spacing: -0.01em; }
+  .layer-name .tag {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    margin-top: 0.2rem;
+  }
+  .layer-body { color: var(--ink-soft); font-size: 0.92rem; }
+  .layer-body ul { margin: 0.45rem 0 0; padding-left: 1.1rem; }
+  .layer-body li { margin-bottom: 0.2rem; }
+  @media (max-width: 640px) {
+    .layer { grid-template-columns: 1fr; gap: 0.5rem; }
+  }
+
+  /* --- Flow ------------------------------------------------------------ */
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; margin: 1.75rem 0; }
+  .step {
+    flex: 1 1 9.5rem;
+    min-width: 9.5rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 0.9rem 1rem;
+    position: relative;
+  }
+  .step + .step { border-left: 0; }
+  .step-n {
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    letter-spacing: 0.14em;
+    color: var(--forge);
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+  .step-t { font-weight: 680; font-size: 0.92rem; display: block; margin-bottom: 0.25rem; }
+  .step-d { font-size: 0.82rem; color: var(--ink-soft); line-height: 1.5; }
+  @media (max-width: 720px) {
+    .step + .step { border-left: 1px solid var(--rule); border-top: 0; }
+  }
+
+  /* --- Cluster grid ---------------------------------------------------- */
+  .clusters { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 1.75rem 0; }
+  .cluster { background: var(--surface); padding: 1.1rem 1.25rem; }
+  .cluster h4 {
+    margin: 0 0 0.15rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+  .cluster .count {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .cluster p { font-size: 0.85rem; margin: 0.5rem 0 0.7rem; }
+  .models { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .models span {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    background: var(--steel-wash);
+    color: var(--steel);
+    padding: 0.13rem 0.42rem;
+    border-radius: 3px;
+  }
+
+  /* --- Callout --------------------------------------------------------- */
+  .note {
+    background: var(--forge-wash);
+    border: 1px solid var(--forge);
+    border-left-width: 4px;
+    padding: 1rem 1.25rem;
+    margin: 1.75rem 0;
+  }
+  .note p { margin: 0; color: var(--ink); max-width: none; font-size: 0.92rem; }
+  .note p + p { margin-top: 0.6rem; }
+  .note .label {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--forge);
+    display: block;
+    margin-bottom: 0.35rem;
+    font-weight: 600;
+  }
+
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem; margin: 1.5rem 0; }
+
+  .pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    padding: 0.14rem 0.45rem;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .pill-open { background: var(--steel-wash); color: var(--steel); }
+  .pill-gated { background: var(--forge-wash); color: var(--forge); }
+
+  footer {
+    background: var(--band);
+    color: #8ba1bb;
+    padding: 2.5rem 0;
+    font-size: 0.85rem;
+  }
+  footer p { color: inherit; max-width: none; margin: 0; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: baseline; }
+  footer .mono { color: var(--forge); }
+
+  a { color: var(--steel); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--forge); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header class="band">
+  <div class="wrap">
+    <p class="wordmark">WorkForge · System Architecture</p>
+    <h1>A marketplace built around how contract manpower is actually bought.</h1>
+    <p class="standfirst">
+      Companies post contract-staffing requirements; verified manpower contractors respond.
+      Four contract categories, each with its own commercial logic, carried consistently from the
+      posting form through to the proposal, the comparison and the award.
+    </p>
+    <dl class="facts">
+      <div class="fact"><dt>Pages</dt><dd>34</dd></div>
+      <div class="fact"><dt>Data models</dt><dd>18</dd></div>
+      <div class="fact"><dt>Domain modules</dt><dd>21</dd></div>
+      <div class="fact"><dt>Access tests</dt><dd>45 <span>passing</span></dd></div>
+      <div class="fact"><dt>Payment providers</dt><dd>0 <span>by design</span></dd></div>
+    </dl>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The domain</p>
+    <h2>Four contract types, not one</h2>
+    <p class="lead">
+      This is the decision the whole product is organised around. Contract manpower is not a single
+      thing, and the category a requirement belongs to determines what the company specifies, what
+      the contractor quotes, and how the two are compared.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>The company specifies</th>
+            <th>The contractor quotes</th>
+            <th>Basis</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>White-collar staffing</strong><span class="sub">Engineers, supervisors, executives</span></td>
+            <td>Roles and headcount</td>
+            <td>Rate per person / month, headcount offered</td>
+            <td><span class="pill pill-open">Per person</span></td>
+          </tr>
+          <tr>
+            <td><strong>Blue-collar staffing</strong><span class="sub">Operators, technicians, tradesmen</span></td>
+            <td>Roles and headcount</td>
+            <td>Rate per person / month, headcount offered</td>
+            <td><span class="pill pill-open">Per person</span></td>
+          </tr>
+          <tr>
+            <td><strong>Job contract</strong><span class="sub">Shutdowns, mould change, loading</span></td>
+            <td>Scope of work and an <strong>output target</strong></td>
+            <td>Rate per tonne / unit / lump sum — <strong>no headcount</strong></td>
+            <td><span class="pill pill-gated">Per output</span></td>
+          </tr>
+          <tr>
+            <td><strong>Unskilled supply</strong><span class="sub">Helpers, loaders, housekeeping</span></td>
+            <td>Roles and headcount</td>
+            <td>Rate per person / month, headcount offered</td>
+            <td><span class="pill pill-open">Per person</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="label">The differentiator</span>
+      <p>
+        The job contract is what most systems get wrong. The company buys an <strong>outcome</strong> —
+        300 tonnes loaded per day, 18 mould changes per shift, a shutdown completed — and how many
+        people or machines to deploy is the contractor's commercial call.
+      </p>
+      <p>
+        WorkForge therefore never asks for a headcount on a job contract. This is enforced in the
+        validation schema, not just hidden in the form: the proposal shape for that category
+        <em>cannot carry</em> a headcount field.
+      </p>
+    </div>
+
+    <h3>How contractors are judged</h3>
+    <p>
+      Two signals, and the search filters and ranks on both. <strong>The client list</strong> — every
+      contractor publishes which companies they serve, at which plant, in which state, how many
+      people, since when. That is what tells a plant in Chhattisgarh who already has people on the
+      ground there. Admins verify entries against work orders and mark them.
+    </p>
+    <p>
+      <strong>Five rating parameters</strong>, filed by the company after each completed engagement:
+      timely deployment, statutory compliance, timely payment to workers, manpower quality, and
+      supervision. Averages are denormalised onto the profile so search can rank on any one of them
+      without aggregating per query.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Runtime</p>
+    <h2>One application, no separate API</h2>
+    <p>
+      There is no detached backend service. The application renders on the server and mutates
+      through <strong>server actions</strong> — typed functions the browser calls directly. That
+      removes an entire REST layer, and with it a class of bugs where the API and the UI disagree
+      about what a valid request looks like.
+    </p>
+
+    <div class="stack">
+      <div class="layer" data-tier="edge">
+        <div class="layer-name">Edge<span class="tag">middleware.ts</span></div>
+        <div class="layer-body">
+          First filter on every request. Verifies the session signature and attaches a
+          per-request nonce Content Security Policy.
+          <ul>
+            <li>Deliberately does no database work, so it cannot check suspension — it is a cheap
+              gate, never the access control itself.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-name">Pages<span class="tag">app/ — 34 routes</span></div>
+        <div class="layer-body">
+          React Server Components. Each protected page and layout independently calls
+          <code>requireUser()</code> or <code>requireRole()</code> — authorisation is re-proved at
+          the page, not inherited from the edge.
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-name">Server actions<span class="tag">app/actions/ — 9 modules</span></div>
+        <div class="layer-body">
+          Every mutation. One module per domain area: auth, company, contractor, requirements,
+          proposals, engagement, messaging, notifications, admin.
+          <ul>
+            <li>Each action re-checks the role, validates with Zod, and rate-limits before touching data.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-name">Domain logic<span class="tag">lib/ — 21 modules</span></div>
+        <div class="layer-body">
+          Where the rules live, kept out of the UI: contractor&nbsp;↔&nbsp;requirement matching,
+          search, contact visibility, profile completeness scoring, validation schemas, the audit
+          trail, notifications and email.
+        </div>
+      </div>
+      <div class="layer" data-tier="data">
+        <div class="layer-name">Data<span class="tag">Prisma → PostgreSQL</span></div>
+        <div class="layer-body">
+          Typed queries against Postgres. Multi-valued attributes (presence states, sectors,
+          categories) are native <code>text[]</code> columns with GIN indexes, because the search
+          filters on them by overlap.
+        </div>
+      </div>
+    </div>
+
+    <h3>What a request actually does</h3>
+    <div class="flow">
+      <div class="step">
+        <span class="step-n">01</span>
+        <span class="step-t">Edge gate</span>
+        <span class="step-d">Session signature checked, CSP nonce issued. Unsigned request redirects to login.</span>
+      </div>
+      <div class="step">
+        <span class="step-n">02</span>
+        <span class="step-t">Page authorises</span>
+        <span class="step-d">Loads the user, rejects suspended accounts and stale sessions.</span>
+      </div>
+      <div class="step">
+        <span class="step-n">03</span>
+        <span class="step-t">Domain query</span>
+        <span class="step-d">Search, matching or lookup runs in <code>lib/</code>, returning only what the viewer may see.</span>
+      </div>
+      <div class="step">
+        <span class="step-n">04</span>
+        <span class="step-t">Render</span>
+        <span class="step-d">HTML built on the server. Gated fields are masked before serialisation, never hidden with CSS.</span>
+      </div>
+      <div class="step">
+        <span class="step-n">05</span>
+        <span class="step-t">Mutate</span>
+        <span class="step-d">A form posts to a server action: role re-checked, input validated, rate limit applied, audit row written.</span>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Concern</th><th>Choice</th><th>Version</th><th>Why this one</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Framework</strong></td><td>Next.js App Router</td><td class="num mono">14.2.18</td><td>Server components and server actions remove the need for a separate API tier</td></tr>
+          <tr><td><strong>Language</strong></td><td>TypeScript</td><td class="num mono">5.6.3</td><td>Types run from the database schema through to the form field</td></tr>
+          <tr><td><strong>Database</strong></td><td>PostgreSQL (Neon)</td><td class="num mono">—</td><td>Array columns with GIN indexes; hosted in Singapore for latency and data residency</td></tr>
+          <tr><td><strong>ORM</strong></td><td>Prisma</td><td class="num mono">5.22.0</td><td>Generated types, explicit migrations</td></tr>
+          <tr><td><strong>Validation</strong></td><td>Zod</td><td class="num mono">3.23.8</td><td>Category-driven refinements — the schema is what forbids headcount on a job contract</td></tr>
+          <tr><td><strong>Sessions</strong></td><td>jose (JWT)</td><td class="num mono">5.9.6</td><td>Signed httpOnly cookies; no session table to keep in sync</td></tr>
+          <tr><td><strong>Passwords</strong></td><td>bcrypt</td><td class="num mono">2.4.3</td><td>Adaptive hashing</td></tr>
+          <tr><td><strong>Styling</strong></td><td>Tailwind CSS</td><td class="num mono">3.4.14</td><td>One component layer, no runtime cost</td></tr>
+          <tr><td><strong>Email</strong></td><td>Resend, over plain fetch</td><td class="num mono">—</td><td>One endpoint, no SDK. Inert unless credentials are set</td></tr>
+          <tr><td><strong>Payments</strong></td><td colspan="3">None. No provider is integrated and nothing is charged — the two parties invoice each other through GST, which is how the trade already works</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Data</p>
+    <h2>Eighteen models, five concerns</h2>
+    <p>
+      Every column used in a filter, sort or join is indexed explicitly — Postgres does not index
+      foreign keys automatically and Prisma only indexes primary and unique keys.
+    </p>
+
+    <div class="clusters">
+      <div class="cluster">
+        <h4>Identity</h4>
+        <span class="count">3 models</span>
+        <p>One account, one role, and at most one profile of the matching type.</p>
+        <div class="models"><span>User</span><span>CompanyProfile</span><span>ContractorProfile</span></div>
+      </div>
+      <div class="cluster">
+        <h4>Track record</h4>
+        <span class="count">3 models</span>
+        <p>What a contractor can prove: published clients, per-category strength, and statutory documents awaiting review.</p>
+        <div class="models"><span>ContractorClient</span><span>ContractorCapacity</span><span>Document</span></div>
+      </div>
+      <div class="cluster">
+        <h4>Marketplace</h4>
+        <span class="count">4 models</span>
+        <p>The transaction: a requirement with its roles, the proposals against it, and direct invitations to quote.</p>
+        <div class="models"><span>Requirement</span><span>RequirementRole</span><span>Proposal</span><span>RequirementInvite</span></div>
+      </div>
+      <div class="cluster">
+        <h4>Delivery</h4>
+        <span class="count">4 models</span>
+        <p>What happens after an award — the engagement, its message thread, the five-parameter rating, and every contact reveal.</p>
+        <div class="models"><span>Engagement</span><span>Message</span><span>ContractorReview</span><span>ContactUnlock</span></div>
+      </div>
+      <div class="cluster">
+        <h4>Platform</h4>
+        <span class="count">4 models</span>
+        <p>Operational scaffolding: in-app notifications, the append-only audit trail, rate-limit counters and admin settings.</p>
+        <div class="models"><span>Notification</span><span>AuditLog</span><span>RateLimit</span><span>Setting</span></div>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="label">Designed for a paid tier without a migration</span>
+      <p>
+        Contact details are open today — any approved company sees a contractor's phone and email
+        immediately. But every reveal is still recorded in <code>ContactUnlock</code>, and the schema
+        carries dormant fee columns plus an admin <code>paymentsEnabled</code> flag.
+      </p>
+      <p>
+        Switching on metered contact reveals is a settings toggle, not a schema change — and there is
+        already a usage history to price against.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Access</p>
+    <h2>Who sees what</h2>
+    <p>
+      The firm directory is public and indexable — that is the growth surface, and the page a
+      contractor sends a prospect. Contact details are not.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Surface</th><th>Visitor<span class="sub">not logged in</span></th><th>Company</th><th>Contractor</th><th>Admin</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Firm directory &amp; profiles</strong><span class="sub">/contractors</span></td><td><span class="pill pill-open">Full</span></td><td><span class="pill pill-open">Full</span></td><td><span class="pill pill-open">Full</span></td><td><span class="pill pill-open">Full</span></td></tr>
+          <tr><td><strong>Contractor phone &amp; email</strong></td><td><span class="pill pill-gated">Masked</span></td><td><span class="pill pill-open">Visible</span></td><td><span class="pill pill-gated">Masked</span></td><td><span class="pill pill-open">Visible</span></td></tr>
+          <tr><td><strong>Post a requirement</strong></td><td>—</td><td><span class="pill pill-open">Yes</span></td><td>—</td><td>—</td></tr>
+          <tr><td><strong>Matched requirement feed</strong></td><td>—</td><td>—</td><td><span class="pill pill-open">Yes</span></td><td>—</td></tr>
+          <tr><td><strong>Submit a proposal</strong></td><td>—</td><td>—</td><td><span class="pill pill-open">Yes</span></td><td>—</td></tr>
+          <tr><td><strong>Engagement &amp; messages</strong></td><td>—</td><td colspan="2" style="text-align:center"><span class="pill pill-open">Participants only</span></td><td>—</td></tr>
+          <tr><td><strong>Uploaded documents</strong></td><td>—</td><td>—</td><td><span class="pill pill-open">Own only</span></td><td><span class="pill pill-open">All</span></td></tr>
+          <tr><td><strong>Every account &amp; audit trail</strong></td><td>—</td><td>—</td><td>—</td><td><span class="pill pill-open">Yes</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      A non-participant requesting an engagement gets a <strong>404, not a 403</strong> — confirming
+      that a record exists is itself a disclosure. This is asserted in the test suite.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Trust</p>
+    <h2>Security and data protection</h2>
+
+    <div class="split">
+      <div>
+        <h3>Credentials</h3>
+        <p>
+          Passwords are bcrypt hashes. The <code>passwordHash</code> field is referenced in exactly
+          two places in the codebase — hashing at registration, comparison at login. It is never
+          selected into a page, a response or a log line.
+        </p>
+        <p>
+          Login compares against a dummy hash when the email is unknown, so a missing account and a
+          wrong password take the same time. The form cannot be used to discover who is registered.
+        </p>
+      </div>
+      <div>
+        <h3>Sessions</h3>
+        <p>
+          Signed httpOnly cookies, secure in production. Each carries a <strong>token version</strong>
+          mirroring the user record.
+        </p>
+        <p>
+          Suspending an account or changing a password increments it, which invalidates every session
+          that account already holds — immediately, rather than waiting for a cookie to expire.
+        </p>
+      </div>
+      <div>
+        <h3>Uploaded documents</h3>
+        <p>
+          Stored in the database rather than object storage, so there is no public bucket to
+          misconfigure. Served only to the owner or an admin, with the file type confirmed by
+          inspecting the bytes rather than trusting the browser.
+        </p>
+        <p>
+          Each is returned under a sandbox CSP, so a script embedded in a crafted PDF has no origin
+          to act against.
+        </p>
+      </div>
+      <div>
+        <h3>Abuse limits</h3>
+        <p>
+          Rate limiting is Postgres-backed rather than in-memory, because serverless instances are
+          ephemeral and do not share state.
+        </p>
+        <p>
+          Applied to registration, login (by IP <em>and</em> by email), uploads, messages, proposals,
+          postings and invitations.
+        </p>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="label">Oversight that is itself accountable</span>
+      <p>
+        Admins can see every registered account and every privileged action. Because that is a
+        genuine privacy exposure, <strong>using it is logged too</strong>: opening a contractor or
+        company review page, or running a user search, writes an entry recording who looked, at what,
+        and what it matched. Those rows are highlighted in the audit view.
+      </p>
+      <p>
+        The trail is append-only — there is no edit or delete path anywhere in the codebase, because
+        a log an administrator can rewrite is not evidence of anything.
+      </p>
+    </div>
+
+    <h3>Also in place</h3>
+    <p>
+      Per-request nonce Content Security Policy; HSTS with preload; server actions accepted only from
+      the application's own origin, with no wildcards; clickjacking and MIME-sniffing protections;
+      authenticated pages marked never to be indexed or cached by shared proxies. Data is encrypted
+      at rest by the database provider.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Operations</p>
+    <h2>Deployment and assurance</h2>
+
+    <div class="split">
+      <div>
+        <h3>How it runs</h3>
+        <p>
+          Vercel for the application, Neon for Postgres, hosted in Singapore for latency and data
+          residency. Because documents live in the database, no object storage is required — which
+          keeps the deployment to two services. A Dockerfile is included if a container host is
+          preferred later.
+        </p>
+      </div>
+      <div>
+        <h3>How it is checked</h3>
+        <p>
+          A build that type-checks the whole application is the release gate. Beyond that, a suite of
+          <strong>45 automated checks</strong> asserts every route's status code and, more
+          importantly, the access-control matrix — that a contractor cannot reach company pages, that
+          a non-participant cannot read an engagement, that the public directory stays public while
+          contact details stay gated.
+        </p>
+      </div>
+    </div>
+
+    <h3>Deliberately not built</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Capability</th><th>Status</th><th>Reasoning</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Payments</strong></td><td><span class="pill pill-gated">By design</span></td><td>No commission is taken. Companies and contractors invoice each other through GST, as the trade already does. The schema is ready if this changes.</td></tr>
+          <tr><td><strong>SMS / WhatsApp OTP</strong></td><td><span class="pill pill-gated">Needs provider</span></td><td>Mobile numbers are collected; delivery requires a commercial gateway. Email notifications are wired and switch on with credentials.</td></tr>
+          <tr><td><strong>Automated KYC</strong></td><td><span class="pill pill-gated">Later</span></td><td>Licences and client entries are reviewed by a person, which is the right call at this stage. Government API verification is an add-on.</td></tr>
+          <tr><td><strong>Regional languages</strong></td><td><span class="pill pill-gated">Known gap</span></td><td>English only today. A known limitation on the contractor side.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>WorkForge — the contract manpower marketplace for Indian industry.</p>
+    <p class="mono">Architecture reference</p>
+  </div>
+</footer>
+</body>
+</html>

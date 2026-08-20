@@ -60,7 +60,8 @@ const nextConfig = {
       { source: "/:path*", headers: securityHeaders },
       // Authenticated areas must never be indexed or cached by shared proxies.
       {
-        source: "/:section(admin|company|contractor|engagements|notifications|dashboard)/:path*",
+        source:
+          "/:section(admin|account|company|contractor|engagements|notifications|dashboard)/:path*",
         headers: noIndexNoStore,
       },
       { source: "/api/:path*", headers: noIndexNoStore },

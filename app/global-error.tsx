@@ -20,7 +20,7 @@ export default function GlobalError({
         <div className="mx-auto max-w-lg px-4 py-16 text-center">
           <h1 className="text-2xl font-bold text-slate-900">Something went wrong</h1>
           <p className="mt-3 text-sm text-slate-600">
-            ShramSetu hit an unexpected error. Please reload the page.
+            WorkForge hit an unexpected error. Please reload the page.
           </p>
           <button onClick={reset} className="btn-primary mt-6">
             Reload

@@ -6,6 +6,15 @@ import { sanitizeFileName } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Serves a verification document back to the person who uploaded it.
+ *
+ * Owner only. Administrators used to be admitted here as well; they now go
+ * through /api/admin/documents/[id], which authenticates against the admin
+ * session and records every single view. Two audiences with genuinely different
+ * rules do not belong behind one branch — that is how an audit trail quietly
+ * acquires a hole.
+ */
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getCurrentUser();
   if (!user) return new NextResponse("Unauthorized", { status: 401 });
@@ -17,13 +26,13 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       mimeType: true,
       fileName: true,
       contractor: { select: { userId: true } },
+      company: { select: { userId: true } },
     },
   });
   if (!doc) return new NextResponse("Not found", { status: 404 });
 
-  const isOwner = doc.contractor.userId === user.id;
-  const isAdmin = user.role === "ADMIN";
-  if (!isOwner && !isAdmin) return new NextResponse("Forbidden", { status: 403 });
+  const ownerId = doc.contractor?.userId ?? doc.company?.userId;
+  if (!ownerId || ownerId !== user.id) return new NextResponse("Forbidden", { status: 403 });
 
   // Uploads are sniffed at write time, but rows created before that was enforced
   // may carry a browser-supplied type. Anything unrecognised is downgraded to an
