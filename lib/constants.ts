@@ -172,9 +172,8 @@ export const INDUSTRIES: Option[] = [
   { value: "glass", label: "Glass & Ceramics" },
   { value: "electronics", label: "Electronics & Electricals" },
   { value: "general_mfg", label: "General Manufacturing" },
-  // Selecting this reveals a free-text box on the profile form. The typed value
-  // is stored alongside the codes, and `industryLabel` falls back to the raw
-  // string, so an unlisted sector displays and searches like any other.
+  // Kept only so rows that stored the literal code before the "Other" box
+  // existed still render with a label — see LISTED_INDUSTRIES below.
   { value: "other", label: "Other" },
 ];
 
@@ -184,6 +183,21 @@ export const INDUSTRY_LABELS: Record<string, string> = Object.fromEntries(
 
 export function industryLabel(value: string): string {
   return INDUSTRY_LABELS[value] ?? value;
+}
+
+/**
+ * What a picker actually offers.
+ *
+ * "Other" is an affordance, never a stored value: choosing it opens a text box
+ * and the typed sector is submitted in place of the code, so nothing in the
+ * database is ever the literal string "other". The entry stays in `INDUSTRIES`
+ * only so rows written before that was true still render with a label.
+ */
+export const LISTED_INDUSTRIES: Option[] = INDUSTRIES.filter((i) => i.value !== "other");
+
+/** True for a code the catalogue defines — anything else was typed by hand. */
+export function isCatalogueIndustry(value: string): boolean {
+  return value in INDUSTRY_LABELS;
 }
 
 export const NATURE_OF_BUSINESS: Option[] = [
@@ -285,8 +299,14 @@ export const JOB_CONTRACT_SCOPES: Option[] = [
   { value: "housekeeping_contract", label: "Housekeeping Contract" },
   { value: "scrap_management", label: "Scrap Management" },
   { value: "civil_works", label: "Civil & Site Works" },
-  { value: "other_scope", label: "Other (describe below)" },
+  // As with "other" above: never offered any more, kept for old rows.
+  { value: "other_scope", label: "Other" },
 ];
+
+/** Job-contract scopes minus the "Other" affordance — see LISTED_INDUSTRIES. */
+export const LISTED_JOB_CONTRACT_SCOPES: Option[] = JOB_CONTRACT_SCOPES.filter(
+  (s) => s.value !== "other_scope",
+);
 
 /** The role list a given category should offer. Empty for job contracts. */
 export function rolesFor(category: string): Option[] {
@@ -313,6 +333,11 @@ const ALL_ROLE_LABELS: Record<string, string> = Object.fromEntries(
 
 /** Every catalogue role code, for telling a known code from a typed-in title. */
 const ALL_ROLE_VALUES = new Set(Object.keys(ALL_ROLE_LABELS));
+
+/** True for a role or scope code the catalogue defines, in any category. */
+export function isCatalogueRole(value: string): boolean {
+  return ALL_ROLE_VALUES.has(value);
+}
 
 export function roleLabel(value: string): string {
   return ALL_ROLE_LABELS[value] ?? value;

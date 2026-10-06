@@ -4,15 +4,14 @@ import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
 import { saveContractorProfile } from "@/app/actions/contractor";
 import {
-  ChipGroup,
   CheckboxField,
   Field,
   NumberField,
-  Select,
   StatesChipGroup,
   StatesSelect,
   TextArea,
 } from "@/components/Field";
+import { ChipGroupWithOther, SelectWithOther } from "@/components/FieldWithOther";
 import { SubmitButton } from "@/components/SubmitButton";
 import { Alert } from "@/components/Badge";
 import { FormErrorFocus } from "@/components/FormErrorFocus";
@@ -21,19 +20,13 @@ import {
   CATEGORIES,
   CATEGORY,
   ENTITY_TYPES,
-  INDUSTRIES,
-  JOB_CONTRACT_SCOPES,
+  LISTED_INDUSTRIES,
+  LISTED_JOB_CONTRACT_SCOPES,
   STATES,
+  isCatalogueIndustry,
+  isCatalogueRole,
   rolesFor,
 } from "@/lib/constants";
-
-/**
- * The chip list excludes the catalogue's own "Other" entry — here it is a
- * checkbox that reveals a text box, so selecting it would submit the literal
- * code "other" alongside whatever was typed.
- */
-const LISTED_INDUSTRIES = INDUSTRIES.filter((i) => i.value !== "other");
-const LISTED_INDUSTRY_VALUES = new Set(LISTED_INDUSTRIES.map((i) => i.value));
 
 type Defaults = {
   firmName?: string;
@@ -72,14 +65,6 @@ export function ContractorProfileForm({ defaults }: { defaults: Defaults }) {
 
   const [categories, setCategories] = useState<string[]>(defaults.categories ?? []);
 
-  // Anything saved that isn't a catalogue code was typed into the "Other" box,
-  // so the box reopens with it rather than appearing to have dropped the value.
-  const otherIndustryDefault = useMemo(
-    () => (defaults.industries ?? []).find((i) => !LISTED_INDUSTRY_VALUES.has(i)) ?? "",
-    [defaults.industries],
-  );
-  const [showOtherIndustry, setShowOtherIndustry] = useState(Boolean(otherIndustryDefault));
-
   const capacityByCategory = useMemo(() => {
     const map = new Map<string, number>();
     for (const c of defaults.capacities ?? []) map.set(c.category, c.strength);
@@ -94,7 +79,7 @@ export function ContractorProfileForm({ defaults }: { defaults: Defaults }) {
     const out: { value: string; label: string }[] = [];
     for (const category of categories) {
       const source =
-        category === CATEGORY.JOB_CONTRACT ? JOB_CONTRACT_SCOPES : rolesFor(category);
+        category === CATEGORY.JOB_CONTRACT ? LISTED_JOB_CONTRACT_SCOPES : rolesFor(category);
       for (const option of source) {
         if (!seen.has(option.value)) {
           seen.add(option.value);
@@ -124,13 +109,16 @@ export function ContractorProfileForm({ defaults }: { defaults: Defaults }) {
             error={e.firmName}
             defaultValue={defaults.firmName}
           />
-          <Select
+          <SelectWithOther
             label="Entity type"
             name="entityType"
             options={ENTITY_TYPES}
             placeholder="Select"
             defaultValue={defaults.entityType ?? ""}
             error={e.entityType}
+            maxLength={40}
+            otherLabel="Other"
+            otherPlaceholder="e.g. Society / Trust"
           />
           <Field
             label="Owner / proprietor"
@@ -265,52 +253,24 @@ export function ContractorProfileForm({ defaults }: { defaults: Defaults }) {
         </fieldset>
         {e.categories && <p className="field-error">{e.categories}</p>}
 
-        <div>
-          <ChipGroup
-            label="Industries you have worked in"
-            name="industries"
-            required
-            options={LISTED_INDUSTRIES}
-            selected={defaults.industries ?? []}
-            error={e.industries}
-            hint="Companies filter by sector experience — a tyre plant looks for firms who have run tyre plants."
-            scroll
-          />
-
-          {/* The catalogue cannot name every sector. The typed value is
-              submitted under the same `industries` key, so it lands in the
-              array beside the coded ones and needs no special handling on the
-              server — `industryLabel` falls back to the raw string. */}
-          <label className="mt-3 flex cursor-pointer items-center gap-2.5">
-            <input
-              type="checkbox"
-              checked={showOtherIndustry}
-              onChange={(ev) => setShowOtherIndustry(ev.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-brand-700 focus:ring-brand-500"
-            />
-            <span className="text-sm font-medium text-slate-700">
-              Other — not in the list above
-            </span>
-          </label>
-
-          {showOtherIndustry && (
-            <div className="mt-2">
-              <label className="sr-only" htmlFor="otherIndustry">
-                Other industry
-              </label>
-              <input
-                id="otherIndustry"
-                name="industries"
-                className="input"
-                placeholder="Type the industry, e.g. Rubber Reclaim"
-                defaultValue={otherIndustryDefault}
-              />
-            </div>
-          )}
-        </div>
+        <ChipGroupWithOther
+          label="Industries you have worked in"
+          name="industries"
+          required
+          options={LISTED_INDUSTRIES}
+          selected={defaults.industries ?? []}
+          error={e.industries}
+          hint="Companies filter by sector experience — a tyre plant looks for firms who have run tyre plants."
+          scroll
+          isKnown={isCatalogueIndustry}
+          otherPlaceholder="Type the industry, e.g. Rubber Reclaim"
+        />
 
         {roleOptions.length > 0 && (
-          <ChipGroup
+          // A role hidden because its category is unticked is still a catalogue
+          // role, so `isKnown` consults the whole catalogue rather than just
+          // the chips currently on screen.
+          <ChipGroupWithOther
             label="Roles & scopes you can supply"
             name="roles"
             options={roleOptions}
@@ -318,6 +278,10 @@ export function ContractorProfileForm({ defaults }: { defaults: Defaults }) {
             error={e.roles}
             hint="Drawn from the contract types you selected above. This is what puts you at the top of a matching requirement."
             scroll
+            maxLength={80}
+            isKnown={isCatalogueRole}
+            otherLabel="Other role or scope — not in the list above"
+            otherPlaceholder="Type the role, e.g. Bandomatic Operator"
           />
         )}
       </section>

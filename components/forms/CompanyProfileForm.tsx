@@ -2,23 +2,19 @@
 
 import { useFormState } from "react-dom";
 import { saveCompanyProfile } from "@/app/actions/company";
-import {
-  ChipGroup,
-  Field,
-  Select,
-  StatesSelect,
-  TextArea,
-} from "@/components/Field";
+import { Field, Select, StatesSelect, TextArea } from "@/components/Field";
+import { ChipGroupWithOther, SelectWithOther } from "@/components/FieldWithOther";
 import { SubmitButton } from "@/components/SubmitButton";
 import { Alert } from "@/components/Badge";
 import { FormErrorFocus } from "@/components/FormErrorFocus";
 import {
   CATEGORIES,
   ENTITY_TYPES,
-  INDUSTRIES,
+  LISTED_INDUSTRIES,
   MANPOWER_BANDS,
   NATURE_OF_BUSINESS,
   STATES,
+  isCatalogueIndustry,
 } from "@/lib/constants";
 
 type Defaults = {
@@ -85,13 +81,16 @@ export function CompanyProfileForm({
             error={e.natureOfBusiness}
             hint="Are you into manufacturing or service?"
           />
-          <Select
+          <SelectWithOther
             label="Entity type"
             name="entityType"
             options={ENTITY_TYPES}
             placeholder="Select"
             defaultValue={defaults.entityType ?? ""}
             error={e.entityType}
+            maxLength={40}
+            otherLabel="Other"
+            otherPlaceholder="e.g. Society / Trust"
           />
           <Select
             label="Manpower strength"
@@ -104,15 +103,17 @@ export function CompanyProfileForm({
           />
         </div>
 
-        <ChipGroup
+        <ChipGroupWithOther
           label="Industry / sector"
           name="industries"
           required
-          options={INDUSTRIES}
+          options={LISTED_INDUSTRIES}
           selected={defaults.industries ?? []}
           error={e.industries}
           hint="Contractors with experience in your sector will be matched first."
           scroll
+          isKnown={isCatalogueIndustry}
+          otherPlaceholder="Type your sector, e.g. Rubber Reclaim"
         />
 
         <Field

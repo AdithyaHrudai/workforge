@@ -4,10 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useFormState } from "react-dom";
 import { saveClient } from "@/app/actions/contractor";
 import { Field, NumberField, Select, StatesSelect, TextArea } from "@/components/Field";
+import { SelectWithOther } from "@/components/FieldWithOther";
 import { SubmitButton } from "@/components/SubmitButton";
 import { Alert } from "@/components/Badge";
 import { FormErrorFocus } from "@/components/FormErrorFocus";
-import { CATEGORY_OPTIONS, INDUSTRIES, STATES } from "@/lib/constants";
+import { CATEGORY_OPTIONS, LISTED_INDUSTRIES, STATES } from "@/lib/constants";
 
 export type ClientDefaults = {
   id?: string;
@@ -67,13 +68,15 @@ export function ClientForm({
           defaultValue={defaults.clientName}
           placeholder="Yokohama India Pvt Ltd"
         />
-        <Select
+        <SelectWithOther
           label="Their industry"
           name="industry"
-          options={INDUSTRIES}
+          options={LISTED_INDUSTRIES}
           placeholder="Select sector"
           defaultValue={defaults.industry ?? ""}
           error={e.industry}
+          otherLabel="Other — not listed"
+          otherPlaceholder="Type their sector"
         />
         <Field
           label="Site / plant city"

@@ -46,12 +46,32 @@ const checkbox = z.preprocess(
   z.boolean(),
 );
 
+/**
+ * Longest a single entry in a multi-select may be.
+ *
+ * The entries are usually catalogue codes, but every such picker offers an
+ * "Other" box whose typed text is submitted under the same key, so the cap has
+ * to fit a real sector or job title rather than a code.
+ */
+const LIST_ITEM_MAX = 80;
+
+/** Repeated keys can carry the same value twice — a chip and the "Other" box. */
+const uniq = (values: string[]) => Array.from(new Set(values));
+
 /** A multi-select that must contain at least one value. */
 function pickList(min: number, message: string, max = 60) {
-  return z.array(z.string().trim().min(1)).min(min, message).max(max);
+  return z
+    .array(z.string().trim().min(1).max(LIST_ITEM_MAX))
+    .min(min, message)
+    .max(max)
+    .transform(uniq);
 }
 
-const optionalList = z.array(z.string().trim().min(1)).max(60).default([]);
+const optionalList = z
+  .array(z.string().trim().min(1).max(LIST_ITEM_MAX))
+  .max(60)
+  .default([])
+  .transform(uniq);
 
 const mobile = z
   .string()
@@ -444,7 +464,7 @@ export const verificationAnswerSchema = z
 export const contractorClientSchema = z
   .object({
     clientName: z.string().trim().min(2, "Enter the client company's name").max(120),
-    industry: optionalText(40),
+    industry: optionalText(60),
     siteCity: z.string().trim().min(2, "Enter the site city").max(80),
     siteState: z.string().trim().min(2, "Select the site state").max(80),
     category: optionalText(40),
@@ -495,7 +515,7 @@ export const capacitySchema = z.object({
 // ---------------------------------------------------------------------------
 
 export const requirementRoleSchema = z.object({
-  role: z.string().trim().min(1, "Choose a role"),
+  role: z.string().trim().min(1, "Choose a role").max(80),
   headcount: requiredInt(1, 100000, "Enter how many people you need"),
   experienceBand: optionalText(20),
   qualification: optionalText(20),
@@ -507,11 +527,11 @@ export const requirementSchema = z
   .object({
     category: z.string().refine(isValidCategory, "Select a contract type"),
     title: z.string().trim().min(4, "Give the requirement a clear title").max(140),
-    industry: optionalText(40),
+    industry: optionalText(60),
     description: optionalText(6000),
 
     // Job-contract fields
-    scopeKey: optionalText(40),
+    scopeKey: optionalText(60),
     outputQuantity: optionalInt(0, 100000000),
     outputUnit: optionalText(20),
     outputPeriod: optionalText(40),

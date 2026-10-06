@@ -49,6 +49,14 @@ export type ScorableRequirement = {
 
 const MAX_SCORE = 100;
 
+/**
+ * Industries and roles are catalogue codes most of the time, but both sides can
+ * type their own ("Rubber Reclaim", "Bandomatic Operator"). Two people typing
+ * the same thing rarely agree on capitalisation, so every comparison here is
+ * case-insensitive — the codes themselves are lowercase, so nothing else moves.
+ */
+const norm = (value: string) => value.trim().toLowerCase();
+
 export function scoreContractorForRequirement(
   contractor: ScorableContractor,
   requirement: ScorableRequirement,
@@ -106,11 +114,12 @@ export function scoreContractorForRequirement(
 
   // --- Industry experience (0–15) ------------------------------------------
   if (requirement.industry) {
-    if (contractor.industries.includes(requirement.industry)) {
+    const wantedIndustry = norm(requirement.industry);
+    if (contractor.industries.some((i) => norm(i) === wantedIndustry)) {
       score += 12;
       reasons.push("Has worked in this industry");
       const sameIndustryClients = (contractor.clients ?? []).filter(
-        (c) => c.industry === requirement.industry,
+        (c) => c.industry && norm(c.industry) === wantedIndustry,
       ).length;
       if (sameIndustryClients > 0) {
         score += 3;
@@ -122,14 +131,15 @@ export function scoreContractorForRequirement(
   }
 
   // --- Role / scope coverage (0–15) ----------------------------------------
+  const supplied = new Set(contractor.roles.map(norm));
   if (requirement.category === CATEGORY.JOB_CONTRACT) {
-    if (requirement.scopeKey && contractor.roles.includes(requirement.scopeKey)) {
+    if (requirement.scopeKey && supplied.has(norm(requirement.scopeKey))) {
       score += 15;
       reasons.push("Lists this scope of work");
     }
   } else if (requirement.roles.length > 0) {
     const wanted = requirement.roles.map((r) => r.role);
-    const covered = wanted.filter((r) => contractor.roles.includes(r));
+    const covered = wanted.filter((r) => supplied.has(norm(r)));
     if (covered.length > 0) {
       score += Math.round((covered.length / wanted.length) * 15);
       reasons.push(`Supplies ${covered.length} of ${wanted.length} required role(s)`);

@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
 import { createRequirement } from "@/app/actions/requirements";
 import { Field, NumberField, Select, StatesSelect, TextArea, CheckboxField } from "@/components/Field";
+import { SelectWithOther } from "@/components/FieldWithOther";
 import { SubmitButton } from "@/components/SubmitButton";
 import { Alert } from "@/components/Badge";
 import { FormErrorFocus } from "@/components/FormErrorFocus";
@@ -12,8 +13,8 @@ import {
   CATEGORY,
   CONTRACT_DURATIONS,
   EXPERIENCE_BANDS,
-  INDUSTRIES,
-  JOB_CONTRACT_SCOPES,
+  LISTED_INDUSTRIES,
+  LISTED_JOB_CONTRACT_SCOPES,
   OUTPUT_UNITS,
   QUALIFICATIONS,
   SHIFTS,
@@ -21,12 +22,16 @@ import {
   URGENCY,
   isHeadcountCategory,
   rateBasisFor,
-  roleLabel,
   rolesFor,
 } from "@/lib/constants";
 
+/** Sentinel for the role select's "Other" row — never submitted. */
+const OTHER_ROLE = "__other__";
+
 type RoleRow = {
   role: string;
+  /** True once "Other" is chosen, so an empty typed role stays in that mode. */
+  custom: boolean;
   headcount: string;
   experienceBand: string;
   qualification: string;
@@ -36,6 +41,7 @@ type RoleRow = {
 
 const emptyRow = (): RoleRow => ({
   role: "",
+  custom: false,
   headcount: "",
   experienceBand: "",
   qualification: "",
@@ -70,7 +76,7 @@ export function RequirementForm({
   // because each category has its own catalogue.
   function changeCategory(next: string) {
     setCategory(next);
-    setRows((prev) => prev.map((r) => ({ ...r, role: "" })));
+    setRows((prev) => prev.map((r) => ({ ...r, role: "", custom: false })));
   }
 
   function updateRow(index: number, patch: Partial<RoleRow>) {
@@ -78,9 +84,9 @@ export function RequirementForm({
   }
 
   const rolesPayload = rows
-    .filter((r) => r.role && r.headcount)
+    .filter((r) => r.role.trim() && r.headcount)
     .map((r) => ({
-      role: r.role,
+      role: r.role.trim(),
       headcount: Number(r.headcount),
       experienceBand: r.experienceBand || undefined,
       qualification: r.qualification || undefined,
@@ -159,23 +165,27 @@ export function RequirementForm({
         />
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Select
+          <SelectWithOther
             label="Industry / sector"
             name="industry"
-            options={INDUSTRIES}
+            options={LISTED_INDUSTRIES}
             placeholder="Select sector"
             defaultValue={companyIndustries[0] ?? ""}
             error={e.industry}
             hint="Contractors filter work by the sectors they know."
+            otherLabel="Other — my sector isn't listed"
+            otherPlaceholder="Type your sector, e.g. Rubber Reclaim"
           />
           {isJobContract && (
-            <Select
+            <SelectWithOther
               label="Nature of the job contract"
               name="scopeKey"
               required
-              options={JOB_CONTRACT_SCOPES}
+              options={LISTED_JOB_CONTRACT_SCOPES}
               placeholder="Select the type of work"
               error={e.scopeKey}
+              otherLabel="Other — not listed"
+              otherPlaceholder="Type the nature of the work"
             />
           )}
         </div>
@@ -208,12 +218,15 @@ export function RequirementForm({
                 placeholder="300"
                 error={e.outputQuantity}
               />
-              <Select
+              <SelectWithOther
                 label="Measured in"
                 name="outputUnit"
                 options={OUTPUT_UNITS}
                 placeholder="Select unit"
                 error={e.outputUnit}
+                maxLength={20}
+                otherLabel="Other unit"
+                otherPlaceholder="e.g. kilolitre"
               />
               <Field
                 label="Per period"
@@ -260,37 +273,52 @@ export function RequirementForm({
                     <label className="label" htmlFor={`role-${i}`}>
                       Role <span className="text-red-500">*</span>
                     </label>
-                    {/* A combobox, not a select: the catalogue covers the common
-                        trades, but no fixed list can cover every plant's job
-                        titles. Typing a role that isn't listed is supported
-                        end-to-end — the schema takes any non-empty string and
-                        roleLabel() falls back to the raw value. */}
-                    <input
+                    {/* The catalogue covers the common trades, but no fixed list
+                        covers every plant's job titles — hence "Other". A role
+                        typed there is stored verbatim: the schema takes any
+                        non-empty string and roleLabel() falls back to the raw
+                        value. A catalogue pick must store its *code*, not its
+                        label, because contractor profiles record roles by code
+                        and lib/matching.ts scores the overlap between them. */}
+                    <select
                       id={`role-${i}`}
                       className="input"
-                      list={`role-options-${i}`}
-                      autoComplete="off"
-                      placeholder="Select or type a role"
-                      value={roleLabel(row.role)}
+                      value={row.custom ? OTHER_ROLE : row.role}
                       onChange={(ev) => {
-                        // Picking a catalogue entry must store its *value*, not
-                        // its label — contractor profiles record roles by value
-                        // and lib/matching.ts scores the overlap between them.
-                        // Anything typed freehand is stored verbatim.
-                        const typed = ev.target.value;
-                        const known = roleOptions.find((o) => o.label === typed);
-                        updateRow(i, { role: known ? known.value : typed });
+                        const picked = ev.target.value;
+                        updateRow(
+                          i,
+                          picked === OTHER_ROLE
+                            ? { custom: true, role: "" }
+                            : { custom: false, role: picked },
+                        );
                       }}
-                    />
-                    <datalist id={`role-options-${i}`}>
+                    >
+                      <option value="">Select a role</option>
                       {roleOptions.map((o) => (
-                        <option key={o.value} value={o.label} />
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
                       ))}
-                    </datalist>
+                      <option value={OTHER_ROLE}>Other — not listed</option>
+                    </select>
+                    {row.custom && (
+                      <input
+                        id={`role-${i}-other`}
+                        className="input mt-2"
+                        aria-label="Role title"
+                        placeholder="Type the role, e.g. Bandomatic Operator"
+                        maxLength={80}
+                        required
+                        autoFocus
+                        value={row.role}
+                        onChange={(ev) => updateRow(i, { role: ev.target.value })}
+                      />
+                    )}
                     {e[`roles.${i}.role`] ? (
                       <p className="field-error">{e[`roles.${i}.role`]}</p>
                     ) : (
-                      <p className="hint">Not listed? Just type it in.</p>
+                      <p className="hint">Not listed? Pick &ldquo;Other&rdquo; and type it in.</p>
                     )}
                   </div>
 

@@ -15,6 +15,10 @@ const BASE = process.env.SMOKE_BASE || "http://localhost:3000";
 const PASSWORD = process.env.SEED_DEMO_PASSWORD;
 const stamp = Date.now();
 
+/** Values no catalogue contains — they only reach the database via "Other". */
+const TYPED_INDUSTRY = "Rubber Reclaim";
+const TYPED_ROLE = "Bandomatic Operator";
+
 if (!PASSWORD) {
   console.error("\n  ✖ Set SEED_DEMO_PASSWORD to the password printed by `npm run db:seed`.\n");
   process.exit(1);
@@ -89,17 +93,26 @@ try {
   await cPage.fill('input[name="city"]', "Visakhapatnam");
   await cPage.selectOption('select[name="state"]', "Andhra Pradesh");
 
-  // The role field is a free-text input backed by a datalist, not a select: a
-  // company may post any job title, and only a code from another category's
-  // catalogue is rejected (see lib/validation.ts). This used to call
-  // selectOption and had been failing here since that changed.
-  await cPage.fill("#role-0", "Fitter");
+  await cPage.selectOption("#role-0", "fitter");
   await cPage.fill("#headcount-0", "12");
+
+  // The "Other" escape hatch, end to end: no catalogue covers every sector or
+  // every plant's job titles, so both pickers offer "Other" and submit the
+  // typed text in place of the code (see components/FieldWithOther.tsx).
+  await cPage.selectOption("#industry-choice", "__other__");
+  await cPage.fill("#industry-other", TYPED_INDUSTRY);
+  await cPage.click('button:has-text("Add another role")');
+  await cPage.selectOption("#role-1", "__other__");
+  await cPage.fill("#role-1-other", TYPED_ROLE);
+  await cPage.fill("#headcount-1", "4");
 
   // Role rows are serialised into a hidden field; wait for React to commit it.
   await cPage.waitForFunction(
-    () => (document.querySelector('input[name="rolesJson"]')?.value || "").includes("fitter"),
-    null,
+    (typedRole) => {
+      const value = document.querySelector('input[name="rolesJson"]')?.value || "";
+      return value.includes("fitter") && value.includes(typedRole);
+    },
+    TYPED_ROLE,
     { timeout: 15000 },
   );
   await cPage.click('button:has-text("Publish requirement")');
@@ -108,6 +121,8 @@ try {
     await visible(cPage, "text=Roles & headcount"),
     `post staffing requirement -> ${new URL(cPage.url()).pathname}`,
   );
+  log(await visible(cPage, `text=${TYPED_ROLE}`), "typed role survives the round trip");
+  log(await visible(cPage, `text=${TYPED_INDUSTRY}`), "typed sector survives the round trip");
 
   // --- Post a JOB CONTRACT (scope + output, no headcount anywhere) ----------
   await cPage.goto(`${BASE}/company/requirements/new`, { waitUntil: "networkidle" });
@@ -120,13 +135,13 @@ try {
   );
 
   await cPage.fill('input[name="title"]', `E2E job contract ${stamp}`);
-  await cPage.selectOption('select[name="scopeKey"]', "material_handling");
+  await cPage.selectOption("#scopeKey-choice", "material_handling");
   await cPage.fill(
     'textarea[name="description"]',
     "Material handling across the dispatch bay on a per-tonne basis. Contractor supplies manpower, supervision and pallet trucks, and decides deployment.",
   );
   await cPage.fill('input[name="outputQuantity"]', "250");
-  await cPage.selectOption('select[name="outputUnit"]', "tonne");
+  await cPage.selectOption("#outputUnit-choice", "tonne");
   await cPage.fill('input[name="city"]', "Visakhapatnam");
   await cPage.selectOption('select[name="state"]', "Andhra Pradesh");
   await cPage.click('button:has-text("Publish requirement")');

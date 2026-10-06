@@ -3,8 +3,8 @@ import { ChipGroup, FilterSection, Select, StatesChipGroup } from "@/components/
 import { AutoSubmit } from "@/components/FilterShell";
 import {
   CATEGORY_OPTIONS,
-  INDUSTRIES,
-  JOB_CONTRACT_SCOPES,
+  LISTED_INDUSTRIES,
+  LISTED_JOB_CONTRACT_SCOPES,
   MANPOWER_BANDS,
   STATES,
   ZONE_OPTIONS,
@@ -109,7 +109,7 @@ export function SearchFilters({
         <ChipGroup
           label="Industry experience"
           name="industries"
-          options={INDUSTRIES}
+          options={LISTED_INDUSTRIES}
           selected={input.industries}
           hideLabel
           scroll
@@ -152,7 +152,7 @@ export function SearchFilters({
         <ChipGroup
           label="Specialised scope"
           name="roles"
-          options={JOB_CONTRACT_SCOPES}
+          options={LISTED_JOB_CONTRACT_SCOPES}
           selected={input.roles}
           hint="For job contracts that are hard to source — mould change, refractory, shutdown maintenance."
           hideLabel

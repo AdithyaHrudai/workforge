@@ -8,7 +8,15 @@ type Common = {
   hint?: string;
 };
 
-function Label({ label, name, required }: { label: string; name: string; required?: boolean }) {
+export function FieldLabel({
+  label,
+  name,
+  required,
+}: {
+  label: string;
+  name: string;
+  required?: boolean;
+}) {
   return (
     <label className="label" htmlFor={name}>
       {label} {required && <span className="text-red-500">*</span>}
@@ -16,7 +24,7 @@ function Label({ label, name, required }: { label: string; name: string; require
   );
 }
 
-function Meta({ hint, error }: { hint?: string; error?: string }) {
+export function FieldMeta({ hint, error }: { hint?: string; error?: string }) {
   return (
     <>
       {hint && <p className="hint">{hint}</p>}
@@ -42,7 +50,7 @@ export function Field({
 } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <div>
-      <Label label={label} name={name} required={required} />
+      <FieldLabel label={label} name={name} required={required} />
       <input
         id={name}
         name={name}
@@ -53,7 +61,7 @@ export function Field({
         aria-invalid={error ? true : undefined}
         {...rest}
       />
-      <Meta hint={hint} error={error} />
+      <FieldMeta hint={hint} error={error} />
     </div>
   );
 }
@@ -71,7 +79,7 @@ export function NumberField(
   const { prefix, suffix, defaultValue, ...rest } = props;
   return (
     <div>
-      <Label label={props.label} name={props.name} required={props.required} />
+      <FieldLabel label={props.label} name={props.name} required={props.required} />
       <div className="flex items-stretch">
         {prefix && (
           <span className="inline-flex items-center rounded-l-lg bg-slate-100 px-3 text-sm text-slate-500 ring-1 ring-inset ring-slate-300">
@@ -96,7 +104,7 @@ export function NumberField(
           </span>
         )}
       </div>
-      <Meta hint={props.hint} error={props.error} />
+      <FieldMeta hint={props.hint} error={props.error} />
     </div>
   );
 }
@@ -113,7 +121,7 @@ export function TextArea({
 }: Common & { defaultValue?: string; rows?: number; placeholder?: string }) {
   return (
     <div>
-      <Label label={label} name={name} required={required} />
+      <FieldLabel label={label} name={name} required={required} />
       <textarea
         id={name}
         name={name}
@@ -123,7 +131,7 @@ export function TextArea({
         className="input"
         aria-invalid={error ? true : undefined}
       />
-      <Meta hint={hint} error={error} />
+      <FieldMeta hint={hint} error={error} />
     </div>
   );
 }
@@ -151,7 +159,7 @@ export function Select({
   const controlled = value !== undefined;
   return (
     <div>
-      <Label label={label} name={name} required={required} />
+      <FieldLabel label={label} name={name} required={required} />
       <select
         id={name}
         name={name}
@@ -168,7 +176,7 @@ export function Select({
           </option>
         ))}
       </select>
-      <Meta hint={hint} error={error} />
+      <FieldMeta hint={hint} error={error} />
     </div>
   );
 }
@@ -270,7 +278,7 @@ export function ChipGroup({
           </label>
         ))}
       </div>
-      <Meta hint={hint} error={error} />
+      <FieldMeta hint={hint} error={error} />
     </fieldset>
   );
 }
